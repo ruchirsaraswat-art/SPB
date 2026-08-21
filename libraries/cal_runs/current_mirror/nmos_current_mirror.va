@@ -1,0 +1,54 @@
+// ---------------------------------------------------------------------------
+// nmos_current_mirror.va
+// Block            : NMOS current mirror, 1:2 (sky130 sky130_fd_pr__nfet_01v8)
+// Date             : 2026-08-20
+// Abstraction      : Verilog-A behavioral (continuous-time, OSDI/ngspice)
+// Run label        : cycle3 calibration: 10uA 1:2 mirror + veriloga/rnm models
+//
+// Parameter to spec-field mapping (defaults = what the transistor-level
+// design ACTUALLY ACHIEVED in the ngspice .op at tt / 27C / VDD=1.8V):
+//   iout_ua      maps to iref_ua * ratio_out/ratio_ref : spec target 20.0 uA,
+//                SPICE-achieved 22.1166 uA, so default = 22.1166
+//   vcompliance  maps to vds_mirror_v (Vds headroom the SPICE design achieved
+//                at the tested operating point) = 0.9 V, so default = 0.9
+//   rout         no spec field; judgment value for the finite output
+//                resistance of the mirror branch (10 Meg keeps the added
+//                slope below 1 percent of iout over 0..1.8 V)
+//   cout         no spec field; small output capacitance (10 fF)
+//
+// Behavior: I(out) = iout_ua*1u * tanh(3*V(out)/vcompliance) + V(out)/rout
+//           + ddt(cout*V(out)).  The factor 3 puts the current within 0.5
+//           percent of target at V(out) = vcompliance (tanh(3) = 0.995).
+//
+// NOT modeled: device noise, mismatch / Monte Carlo, temperature dependence,
+// reference startup transients, supply sensitivity, bidirectional loading of
+// the reference branch (only the output branch is a terminal).
+//
+// Verification status: see summary.json and va_sim.log; the self-checking
+// testbench nmos_current_mirror_va_tb.spice prints VA_TB_PASS on success.
+// ---------------------------------------------------------------------------
+
+`include "constants.vams"
+`include "disciplines.vams"
+
+module nmos_current_mirror(out, gnd);
+  inout out, gnd;
+  electrical out, gnd;
+
+  // Achieved output current in uA (SPICE-measured; spec target was 20.0)
+  parameter real iout_ua     = 22.1166 from (0:1e6);
+  // Output compliance voltage in V (SPICE-achieved Vds of mirror device)
+  parameter real vcompliance = 0.9     from (1e-3:10);
+  // Finite output resistance (ohms) - convergence-friendly, judgment value
+  parameter real rout        = 10e6    from (1:1e12);
+  // Output capacitance (F) - convergence-friendly, judgment value
+  parameter real cout        = 10e-15  from [0:1e-6];
+
+  analog begin
+    // Smooth tanh compliance rolloff - no discontinuous branches
+    I(out,gnd) <+ iout_ua*1e-6 * tanh(3.0*V(out,gnd)/vcompliance);
+    // Finite output impedance (never an ideal element)
+    I(out,gnd) <+ V(out,gnd)/rout;
+    I(out,gnd) <+ ddt(cout*V(out,gnd));
+  end
+endmodule

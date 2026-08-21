@@ -1,0 +1,30 @@
+* Self-checking TB for the corrected one-pole Verilog-A idiom (fixture).
+* Checks numerically: DC gain = 20 dB +/- 0.1 dB and -3 dB point within 2%
+* of fp = 1 MHz. The old broken idiom would read ~14 dB / ~2 MHz and FAIL.
+* OSDI usage exactly per the probed contract: pre_osdi in .control, params
+* on a .model card, N-prefixed instance line.
+
+Vin in 0 DC 0 AC 1
+Nop1 in out po_mod
+.model po_mod onepole gain=10 fp=1e6 rout=100
+
+.control
+pre_osdi ./onepole.osdi
+ac dec 200 1k 100meg
+meas ac dcg FIND vdb(out) AT=1k
+* one-pole -3 dB level: 20*log10(10) - 3.0103 = 16.9897 dB
+meas ac f3db WHEN vdb(out)=16.9897 FALL=1
+let g_err = abs(dcg - 20.0)
+let f_err = abs(f3db - 1.0e6) / 1.0e6
+if g_err < 0.1
+  if f_err < 0.02
+    echo VA_TB_PASS
+  else
+    echo VA_TB_FAIL pole off: f3db = $&f3db
+  end
+else
+  echo VA_TB_FAIL dc gain off: dcg = $&dcg dB
+end
+quit 0
+.endc
+.end

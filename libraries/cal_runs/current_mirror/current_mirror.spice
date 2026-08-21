@@ -1,0 +1,14 @@
+** sch_path: /home/rsarasw1/analog-spec-tool/runs/89112a768b5b/current_mirror.sch
+**.subckt current_mirror IOUT
+*.opin IOUT
+XM1 net1 net1 GND GND sky130_fd_pr__nfet_01v8 L=1 W=1 nf=1 ad=expr('int((@nf + 1)/2) * @W / @nf * 0.29')
++ as=expr('int((@nf + 2)/2) * @W / @nf * 0.29') pd=expr('2*int((@nf + 1)/2) * (@W / @nf + 0.29)') ps=expr('2*int((@nf + 2)/2) * (@W / @nf + 0.29)')
++ nrd=expr('0.29 / @W ') nrs=expr('0.29 / @W ') sa=0 sb=0 sd=0 mult=1 m=1
+XM2 IOUT net1 GND GND sky130_fd_pr__nfet_01v8 L=1 W=2 nf=1 ad=expr('int((@nf + 1)/2) * @W / @nf * 0.29')
++ as=expr('int((@nf + 2)/2) * @W / @nf * 0.29') pd=expr('2*int((@nf + 1)/2) * (@W / @nf + 0.29)') ps=expr('2*int((@nf + 2)/2) * (@W / @nf + 0.29)')
++ nrd=expr('0.29 / @W ') nrs=expr('0.29 / @W ') sa=0 sb=0 sd=0 mult=1 m=1
+I1 VDD net1 10u
+**.ends
+.GLOBAL VDD
+.GLOBAL GND
+.end

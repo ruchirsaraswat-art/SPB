@@ -1,0 +1,42 @@
+* nmos_current_mirror_va_tb.spice
+* Self-checking testbench for the Verilog-A NMOS current mirror model
+* (nmos_current_mirror.va compiled to nmos_current_mirror.osdi).
+* DC sweep of V(out) 0..1.8 V. Checks:
+*   1. iout within 5 percent of target for ALL v(out) at or above vcompliance
+*   2. iout below 80 percent of target at v(out) = vcompliance/3 (rolloff
+*      exists - a degenerate always-on source must fail this)
+* target = 22.1166 uA (SPICE-achieved Iout), vcompliance = 0.9 V (achieved).
+* Prints exactly one of VA_TB_PASS or VA_TB_FAIL <reason>.
+
+VOUT out 0 0
+NMIR out 0 mirmod
+.model mirmod nmos_current_mirror iout_ua=22.1166 vcompliance=0.9 rout=10e6 cout=10e-15
+
+.control
+pre_osdi ./nmos_current_mirror.osdi
+dc VOUT 0 1.8 0.005
+let iout = -i(VOUT)
+let target = 22.1166e-6
+let vc = 0.9
+let verr = abs(iout/target - 1)
+let mask = v(out) ge vc
+let bad = (verr gt 0.05) & mask
+let nbad = mean(bad)*length(bad)
+meas dc iout_vc find iout when v(out)=0.9
+meas dc iout_c3 find iout when v(out)=0.3
+let frac_c3 = iout_c3/target
+echo VA_IOUT_AT_VC_A = $&iout_vc
+echo VA_IOUT_AT_VC3_A = $&iout_c3
+echo VA_FRAC_AT_VC3 = $&frac_c3
+echo VA_NBAD_ABOVE_VC = $&nbad
+if $&nbad eq 0
+  if $&frac_c3 lt 0.8
+    echo VA_TB_PASS
+  else
+    echo VA_TB_FAIL no compliance rolloff at vc/3
+  end
+else
+  echo VA_TB_FAIL current not within 5 percent above compliance
+end
+.endc
+.end

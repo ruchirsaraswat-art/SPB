@@ -1,0 +1,837 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #0f1115;
+  color: #e6e6e6;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.app-shell {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px 20px 80px;
+}
+
+/* Always-visible control for stopping whatever's currently in flight
+   (build or research) - deliberately not buried inside a
+   conditionally-rendered results panel, so it's impossible to miss: it
+   renders as the very first thing under the page title, before the form. */
+.active-run-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #1e2530;
+  border: 1px solid #3b82f6;
+  border-radius: 8px;
+  padding: 10px 16px;
+  margin: 0 0 16px;
+  max-width: 1400px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.active-run-bar .stop-btn {
+  margin-left: auto;
+  padding: 6px 16px;
+}
+
+.error-inline {
+  color: #fca5a5;
+  font-size: 0.85rem;
+}
+
+.split-panels {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .split-panels {
+    grid-template-columns: 1fr;
+  }
+}
+
+.panel {
+  min-width: 0;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.live-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6);
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(34, 197, 94, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);
+  }
+}
+
+.log-panel {
+  background: #171a21;
+  border: 1px solid #2a2f3a;
+  border-radius: 10px;
+  padding: 16px 18px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.log-panel h3 {
+  margin: 0 0 8px;
+}
+
+.log-text {
+  background: #0b0d11;
+  border: 1px solid #2a2f3a;
+  border-radius: 8px;
+  padding: 12px;
+  white-space: pre-wrap;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  max-height: 720px;
+  min-height: 300px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.stop-btn {
+  background: #dc2626;
+  margin-top: 12px;
+}
+
+.stop-btn:hover {
+  background: #b91c1c;
+}
+
+.error-box.small {
+  font-size: 0.85rem;
+  padding: 8px 12px;
+  margin-top: 8px;
+}
+
+header h1 {
+  margin-bottom: 2px;
+}
+
+.subtitle {
+  color: #9aa4b2;
+  margin-top: 0;
+}
+
+.spec-form {
+  background: #171a21;
+  border: 1px solid #2a2f3a;
+  border-radius: 10px;
+  padding: 20px 24px;
+  margin-bottom: 24px;
+}
+
+.spec-form h2 {
+  margin-top: 0;
+}
+
+.spec-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.9rem;
+  color: #c6ccd6;
+  margin-bottom: 14px;
+  flex: 1;
+}
+
+.spec-form input,
+.spec-form select {
+  background: #0f1115;
+  border: 1px solid #333a48;
+  color: #e6e6e6;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 1rem;
+}
+
+.field-row {
+  display: flex;
+  gap: 16px;
+  align-items: flex-end;
+}
+
+.ratio-colon {
+  padding-bottom: 22px;
+  font-size: 1.2rem;
+  color: #9aa4b2;
+}
+
+.hint {
+  font-size: 0.82rem;
+  color: #8892a0;
+  margin-top: -8px;
+  margin-bottom: 16px;
+}
+
+/* Non-blocking sky130-feasibility / cross-field sanity warning under a form
+   field (schema-driven warn_above/warn_below, low-VDD headroom, derived
+   mirror width, inconsistent serializer clock triple). Amber, not red: the
+   spec still submits - it's a "this is beyond what sky130 has demonstrably
+   done" flag, unlike the hard min/max bounds which block submit. */
+.field-warning {
+  font-size: 0.82rem;
+  color: #fbbf24;
+  background: #2a2312;
+  border-left: 3px solid #d97706;
+  border-radius: 3px;
+  padding: 6px 10px;
+  margin: -8px 0 14px;
+}
+
+/* FieldWithNote wrappers inside a .field-row need to flex like the bare
+   labels do (the flex:1 on .spec-form label doesn't reach through the
+   wrapper div). */
+.field-row .field-with-note {
+  flex: 1;
+}
+
+button {
+  background: #3b82f6;
+  color: white;
+  border: none;
+  padding: 10px 18px;
+  border-radius: 6px;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+button:disabled {
+  background: #4b5563;
+  cursor: not-allowed;
+}
+
+.toggle-raw {
+  background: #2a2f3a;
+  margin-top: 12px;
+}
+
+.results-view {
+  background: #171a21;
+  border: 1px solid #2a2f3a;
+  border-radius: 10px;
+  padding: 20px 24px;
+}
+
+.results-view.failed {
+  border-color: #7f1d1d;
+}
+
+.results-view.success {
+  border-color: #14532d;
+}
+
+.error-box {
+  background: #2b1414;
+  border: 1px solid #7f1d1d;
+  color: #fecaca;
+  padding: 12px 16px;
+  border-radius: 8px;
+  margin: 12px 0;
+  white-space: pre-wrap;
+}
+
+/* Soft sky130-feasibility warnings persisted into the run record at submit
+   time, re-surfaced in ResultsView so a result viewed later keeps its "this
+   spec was aggressive for sky130" context. Amber like .field-warning (same
+   non-blocking semantics), boxed like .notes-box. */
+.warnings-box {
+  font-size: 0.85rem;
+  color: #fbbf24;
+  background: #2a2312;
+  border: 1px solid #d97706;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin: 10px 0;
+}
+
+.warnings-box ul {
+  margin: 6px 0 0;
+  padding-left: 20px;
+}
+
+.notes-box {
+  background: #1c1f28;
+  border: 1px solid #333a48;
+  padding: 10px 14px;
+  border-radius: 8px;
+  margin: 10px 0;
+  font-size: 0.9rem;
+}
+
+.schematic-block img.schematic-img {
+  width: 100%;
+  max-width: 800px;
+  background: #000;
+  border-radius: 8px;
+  border: 1px solid #333a48;
+  display: block;
+  margin-bottom: 10px;
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.metric {
+  background: #1c1f28;
+  border: 1px solid #2a2f3a;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.metric-label {
+  font-size: 0.75rem;
+  color: #9aa4b2;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.metric-value {
+  font-size: 1.15rem;
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+.metric-unit {
+  font-size: 0.8rem;
+  color: #9aa4b2;
+  font-weight: 400;
+}
+
+.metric-missing {
+  color: #6b7280;
+  font-weight: 400;
+}
+
+.artifacts-block ul {
+  padding-left: 20px;
+}
+
+.artifacts-block a {
+  color: #60a5fa;
+}
+
+/* Virtuoso-style design-library picker on the spec form. */
+.library-picker {
+  border: 1px solid #2a2f3a;
+  border-radius: 8px;
+  padding: 12px 14px 4px;
+  margin: 4px 0 14px;
+}
+
+.library-picker .new-library-row {
+  align-items: flex-end;
+}
+
+.library-picker .new-library-row button {
+  margin-bottom: 14px;
+  white-space: nowrap;
+}
+
+.notes-box.library-filed {
+  border-color: #14532d;
+}
+
+/* Behavioral-model generation (cycle 2): checkbox group on the spec form. */
+.models-group {
+  border: 1px solid #2a2f3a;
+  border-radius: 8px;
+  padding: 10px 14px 12px;
+  margin: 4px 0 14px;
+}
+
+.models-group legend {
+  font-size: 0.95rem;
+  font-weight: 600;
+  padding: 0 6px;
+}
+
+.model-choice {
+  margin: 6px 0;
+}
+
+/* Override .spec-form label's column layout: a checkbox belongs on the same
+   line as its text. */
+.spec-form .model-checkbox {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 0.9rem;
+}
+
+.spec-form .model-checkbox input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+
+.model-checkbox.disabled {
+  color: #6b7280;
+}
+
+/* Why a disabled model type is disabled - also in the tooltip, but shown
+   inline so the reasoning is visible without hovering. */
+.model-disabled-reason {
+  font-size: 0.78rem;
+  color: #6b7280;
+  margin: 2px 0 0 24px;
+}
+
+/* Behavioral-model rows in ResultsView. */
+.models-block .model-row {
+  background: #1c1f28;
+  border: 1px solid #2a2f3a;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin: 10px 0;
+}
+
+.model-row-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.model-row-head a {
+  color: #60a5fa;
+  font-size: 0.85rem;
+}
+
+.model-status-badge {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid;
+}
+
+.model-status-badge.ok {
+  color: #4ade80;
+  border-color: #14532d;
+  background: #10231a;
+}
+
+.model-status-badge.warn {
+  color: #fbbf24;
+  border-color: #d97706;
+  background: #2a2312;
+}
+
+.model-status-badge.bad {
+  color: #fca5a5;
+  border-color: #7f1d1d;
+  background: #2b1414;
+}
+
+.model-status-badge.neutral {
+  color: #9aa4b2;
+  border-color: #333a48;
+  background: #171a21;
+}
+
+.model-status-reason {
+  font-size: 0.82rem;
+  color: #9aa4b2;
+  margin: 6px 0 0;
+}
+
+.model-checks-table {
+  border-collapse: collapse;
+  margin: 10px 0 4px;
+  font-size: 0.85rem;
+}
+
+.model-checks-table th,
+.model-checks-table td {
+  border: 1px solid #2a2f3a;
+  padding: 4px 10px;
+  text-align: left;
+}
+
+.model-checks-table th {
+  color: #9aa4b2;
+  font-weight: 600;
+  background: #171a21;
+}
+
+.model-file-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.model-file-actions .toggle-raw {
+  margin-top: 0;
+  font-size: 0.8rem;
+  padding: 6px 10px;
+}
+
+.model-file-view {
+  max-height: 380px;
+  overflow: auto;
+}
+
+.raw-text {
+  background: #0b0d11;
+  border: 1px solid #2a2f3a;
+  border-radius: 8px;
+  padding: 12px;
+  white-space: pre-wrap;
+  font-size: 0.85rem;
+  max-height: 400px;
+  overflow: auto;
+}
+
+.candidate-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.candidate-card {
+  display: block;
+  background: #1c1f28;
+  border: 1px solid #2a2f3a;
+  border-radius: 8px;
+  padding: 12px 14px;
+  cursor: pointer;
+}
+
+.candidate-card.chosen {
+  border-color: #3b82f6;
+  background: #182236;
+}
+
+.candidate-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 1rem;
+}
+
+.recommended-badge {
+  background: #14532d;
+  color: #bbf7d0;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.candidate-summary {
+  margin: 6px 0 8px;
+  color: #c6ccd6;
+  font-size: 0.9rem;
+}
+
+.candidate-pros-cons {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.candidate-pros-cons ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 0.85rem;
+  color: #c6ccd6;
+}
+
+.pc-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #9aa4b2;
+}
+
+.pc-pros {
+  color: #86efac;
+}
+
+.pc-cons {
+  color: #fca5a5;
+}
+
+.research-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+
+.research-recap {
+  background: #1c1f28;
+  border: 1px solid #2a2f3a;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 0.85rem;
+}
+
+.spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid #333a48;
+  border-top-color: #3b82f6;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-top: 10px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Complete-architecture wired diagram (in the PHY Architecture area) */
+.arch-diagram {
+  margin: 10px 0 16px;
+}
+.arch-diagram-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.arch-diagram-scroll {
+  overflow-x: auto;
+  background: #f8fafc; /* light canvas so the diagram reads like a doc figure and matches its PNG export */
+  border: 1px solid #333a48;
+  border-radius: 8px;
+  padding: 4px;
+}
+.arch-diagram svg {
+  display: block;
+  user-select: none;
+}
+
+/* Per-topology structured spec fields section in the spec form */
+.spec-section-title {
+  margin: 14px 0 4px;
+  font-size: 0.95rem;
+}
+
+/* connect-mode toggle in the diagram header */
+.toggle-raw.active {
+  outline: 2px solid #3b82f6;
+}
+
+/* Schematic sub-window (cycle 4): collapsible side panel next to the spec
+   form showing the highlighted block's best available schematic (filed
+   library cell, else latest successful run's PNG, else the empty state).
+   Sticky so it stays in view while scrolling the long spec form. */
+.form-with-schematic {
+  margin-bottom: 0;
+}
+
+.schematic-panel-slot {
+  position: sticky;
+  top: 12px;
+}
+
+.schematic-panel {
+  background: #171a21;
+  border: 1px solid #2a2f3a;
+  border-radius: 10px;
+  padding: 16px 18px;
+  margin-bottom: 24px;
+}
+
+.schematic-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.schematic-panel-head h3 {
+  margin: 0;
+  font-size: 1rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schematic-block-id {
+  color: #9aa4b2;
+  font-weight: 400;
+  font-size: 0.85rem;
+}
+
+.schematic-panel .collapse-btn {
+  margin-top: 0;
+  font-size: 0.8rem;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
+.schematic-panel-body {
+  margin-top: 12px;
+}
+
+.schematic-panel .schematic-img {
+  width: 100%;
+  background: #000;
+  border-radius: 8px;
+  border: 1px solid #333a48;
+  display: block;
+  margin-bottom: 8px;
+}
+
+.schematic-empty {
+  color: #9aa4b2;
+  background: #1c1f28;
+  border: 1px dashed #333a48;
+  border-radius: 8px;
+  padding: 22px 16px;
+  text-align: center;
+  font-size: 0.9rem;
+  margin: 4px 0;
+}
+
+.schematic-source {
+  margin: 0 0 10px;
+}
+
+.schematic-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.schematic-no-display {
+  margin: 0;
+}
+
+/* "Add block" prompt row in the diagram header */
+.arch-add-block {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.arch-add-block input[type="text"] {
+  flex: 1;
+  min-width: 180px;
+}
+
+/* --- Tool settings (cycle 5): gear + working-directory panel ------------- */
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.settings-gear {
+  background: transparent;
+  border: 1px solid #4a5568;
+  color: inherit;
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+.settings-gear:hover {
+  border-color: #7aa2f7;
+}
+.settings-panel .settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.settings-panel h2 {
+  margin: 0 0 8px;
+}
+.settings-panel h3 {
+  margin: 16px 0 6px;
+  font-size: 0.95rem;
+}
+.settings-close {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 4px 8px;
+}
+.settings-panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.9rem;
+  color: #c6ccd6;
+  margin-bottom: 6px;
+}
+.settings-panel input[type="text"] {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: monospace;
+}
+.settings-panel .hint {
+  margin-top: 2px;
+  margin-bottom: 10px;
+}
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.settings-saved {
+  color: #9ece6a;
+  font-size: 0.85rem;
+}
+.settings-error {
+  white-space: pre-wrap;
+}
+.settings-derived {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+.settings-derived li {
+  margin: 3px 0;
+  word-break: break-all;
+}
+.runs-root-hint {
+  word-break: break-all;
+}

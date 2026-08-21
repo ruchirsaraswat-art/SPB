@@ -1,0 +1,31 @@
+* current_mirror_tb.spice
+* Testbench for 1:2 NMOS current mirror (sky130A, tt corner, 27C)
+* DUT devices hand-written (xschem expr() junction params omitted; they
+* default to 0 and do not affect a DC operating point).
+* IOUT node is biased at 0.9 V (mid-supply) by VOUT to give M2 a defined,
+* saturated operating point; VS1/VS2 are 0 V ammeters for Iref and Iout.
+.lib /home/rsarasw1/.volare/sky130A/libs.tech/ngspice/sky130.lib.spice tt
+.temp 27.0
+
+VDD vdd 0 1.8
+IREF vdd nref 10u
+VS1 nref ngate 0
+* M1: diode-connected reference, W=1 L=1
+XM1 ngate ngate 0 0 sky130_fd_pr__nfet_01v8 L=1 W=1 nf=1 mult=1
+* M2: mirror output, W=2 L=1
+XM2 ndrain ngate 0 0 sky130_fd_pr__nfet_01v8 L=1 W=2 nf=1 mult=1
+VS2 nout ndrain 0
+VOUT nout 0 0.9
+
+.control
+op
+let iref_meas = i(VS1)
+let iout_meas = i(VS2)
+let vgs_m1 = v(ngate)
+let vds_m2 = v(ndrain)
+echo RESULT_IREF_A = $&iref_meas
+echo RESULT_IOUT_A = $&iout_meas
+echo RESULT_VGS_M1_V = $&vgs_m1
+echo RESULT_VDS_M2_V = $&vds_m2
+.endc
+.end

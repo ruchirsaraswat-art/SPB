@@ -1,0 +1,29 @@
+// Fixture: single-pole gain stage using the CORRECTED cycle-3 pole idiom
+// (current-contribution form on the internal node - see models_contract.py
+// VA_RESTRICTIONS). Expected transfer function: H(s) = gain / (1 + s/wp),
+// i.e. DC gain = `gain` exactly and -3 dB at fp = wp/(2*pi).
+// The old (cycle-2) voltage-form idiom with a -V(int) term gave gain/2 and
+// a pole at 2*wp; the numeric TB check in test_va_fixture.py would fail on it.
+`include "disciplines.vams"
+
+module onepole(in, out);
+    inout in, out;
+    electrical in, out, int;
+
+    parameter real gain = 10.0;              // linear DC gain (20 dB)
+    parameter real fp   = 1.0e6 from (0:inf); // pole frequency, Hz
+    parameter real rout = 100.0 from (0:inf); // finite output impedance
+
+    real wp;
+
+    analog begin
+        wp = 6.283185307179586 * fp;
+        // The standard corrected idiom: current contribution into `int`,
+        // whose only other "load" is the implicit 1-ohm normalizing
+        // conductance (-V(int) term). KCL: V(int)*(1 + s/wp) = gain*V(in).
+        I(int) <+ gain*V(in) - V(int) - ddt(V(int))/wp;
+        // Buffered output through a finite rout (contract: never an ideal
+        // 0-ohm source driving an arbitrary load).
+        I(out) <+ (V(out) - V(int)) / rout;
+    end
+endmodule

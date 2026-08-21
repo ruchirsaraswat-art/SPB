@@ -1,0 +1,19 @@
+# Python
+backend/.venv/
+__pycache__/
+*.pyc
+
+# Node / frontend build
+node_modules/
+frontend/dist/
+
+# Downloaded toolchain binaries (97MB; see audits/2026-08-20-behavioral-models-spec.md for install)
+tools/
+
+# Generated run outputs (kept local; filed results live in libraries/)
+runs/
+research_runs/
+
+# Local scratch
+*.log
+.DS_Store
