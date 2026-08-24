@@ -49,7 +49,13 @@ def run_fw_consultant(prompt, log_dir, log_stem, timeout_s=None):
     """Thin, monkeypatchable wrapper: same read-only consultant invocation as
     arch/if chat, but under the Firmware_Coder persona with the
     digital-microarch research notes on the read path."""
-    kwargs: dict[str, Any] = {"agent": "Firmware_Coder", "knowledge_dir": FW_KNOWLEDGE_DIR}
+    kwargs: dict[str, Any] = {
+        "agent": "Firmware_Coder",
+        "knowledge_dir": FW_KNOWLEDGE_DIR,
+        # Explicit Sonnet routing (invocation.MODEL_ROUTING) - agrees with,
+        # but does not rely on, the charter's `model: sonnet` frontmatter.
+        "run_type": "fw_chat",
+    }
     if timeout_s is not None:
         kwargs["timeout_s"] = timeout_s
     return run_arch_consultant(prompt, log_dir, log_stem, **kwargs)

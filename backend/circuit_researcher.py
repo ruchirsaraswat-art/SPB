@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from invocation import last_stream_cost_usd, model_args
 from topologies import format_extra_field_lines, topology_display_name
 
 CLAUDE_BIN = "claude"
@@ -235,7 +236,10 @@ def run_circuit_researcher(
     prompt = build_prompt(spec)
     (run_dir / "prompt.txt").write_text(prompt)
 
-    cmd = [CLAUDE_BIN, "--agent", "Circuit_Researcher", "--add-dir", str(KNOWLEDGE_BASE_DIR)]
+    # Explicit model routing (invocation.MODEL_ROUTING): "research" inherits
+    # the session default (fable-5) - stated in the table, not implied.
+    cmd = [CLAUDE_BIN, "--agent", "Circuit_Researcher", *model_args("research"),
+           "--add-dir", str(KNOWLEDGE_BASE_DIR)]
     for tool in ALLOWED_TOOLS:
         cmd += ["--allowedTools", tool]
     cmd += ["--output-format", "stream-json", "--verbose", "-p", prompt]
@@ -303,24 +307,33 @@ def run_circuit_researcher(
 
     duration_ms = int((time.time() - started) * 1000)
 
+    # Cost booking on abnormal endings (Token_Optimizer audit item 4).
+    failed_cost = last_stream_cost_usd(raw_log_path)
+
     if cancelled:
-        return CircuitResearcherResult(status="failed", reason="Cancelled by user", duration_ms=duration_ms)
+        return CircuitResearcherResult(
+            status="failed", reason="Cancelled by user",
+            cost_usd=failed_cost, duration_ms=duration_ms,
+        )
     if timed_out:
         return CircuitResearcherResult(
             status="failed",
             reason=f"Circuit_Researcher invocation timed out after {timeout_s}s",
+            cost_usd=failed_cost,
             duration_ms=duration_ms,
         )
     if proc.returncode != 0:
         return CircuitResearcherResult(
             status="failed",
             reason=f"claude CLI exited with code {proc.returncode}",
+            cost_usd=failed_cost,
             duration_ms=duration_ms,
         )
     if final_event is None:
         return CircuitResearcherResult(
             status="failed",
             reason="claude CLI exited without emitting a final result event",
+            cost_usd=failed_cost,
             duration_ms=duration_ms,
         )
 

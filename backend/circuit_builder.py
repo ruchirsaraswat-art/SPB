@@ -55,6 +55,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from invocation import (
+    booked_cost_usd,
+    model_args,
+    preflight_write_check,
+)
 from models_contract import (
     MODEL_LABELS,
     MODEL_TYPES,
@@ -146,7 +151,7 @@ def disallowed_tools() -> list[str]:
         denies += [f"Write({root}/**)", f"Edit({root}/**)"]
     return denies
 
-DEFAULT_TIMEOUT_S = 2400  # a real netlist+sim+render run (incl. testbench debugging) can take 15-30+ minutes
+DEFAULT_TIMEOUT_S = 1800  # trimmed 2400 -> 1800 (Token_Optimizer audit item 4, 2026-08-23): the observed healthy full runs finish well under 30 min; a run still going at 30 is wedged and burning money
 POLL_INTERVAL_S = 1.0  # how often the read loop checks cancel/timeout when no output is ready
 
 # Single-deliverable run modes (RunSpec.deliverable). "full" = the original
@@ -209,7 +214,41 @@ def _write_project_xschemrc(run_dir: Path) -> None:
     )
 
 
+# Fail-fast prompt framing (Token_Optimizer audit item 2, 2026-08-23). The
+# preflight line opens EVERY build prompt: one observed run burned $0.99
+# working around a write-permission problem instead of stopping. The summary
+# reminder closes every prompt that requires summary.json, restating the
+# schema requirement within the final lines (two runs burned $1.97 producing
+# unparseable summary.json after long sessions where the schema requirement
+# had scrolled 1000+ lines out of focus).
+PROMPT_PREFLIGHT_LINE = """FIRST ACTION - WRITE PREFLIGHT: before anything else, confirm you can write
+in the current working directory (Write a small file named `write_check.txt`,
+then continue). If that write - or ANY later write - is permission-denied,
+STOP IMMEDIATELY and report the permission error as your final reply. Do not
+attempt workarounds through other tools; a blocked run dir means the run is
+misconfigured and burning money.
+
+"""
+
+PROMPT_SUMMARY_REMINDER = """
+FINAL REMINDER (restating the requirement above): the very LAST file you
+write MUST be `summary.json`, via the Write tool, containing ONLY one valid
+JSON object with exactly the keys specified above - no markdown fences, no
+surrounding text, parseable on its own. Write it even after a failure
+(status "failed" + "error" filled in). A run without a parseable
+summary.json is treated as failed regardless of what else succeeded.
+"""
+
+
 def build_prompt(spec: dict[str, Any]) -> str:
+    """The full prompt for a run: the fail-fast write-preflight opener, the
+    deliverable-specific body from _build_base_prompt, and the closing
+    summary.json schema restatement (every deliverable of this module
+    requires summary.json)."""
+    return PROMPT_PREFLIGHT_LINE + _build_base_prompt(spec) + PROMPT_SUMMARY_REMINDER
+
+
+def _build_base_prompt(spec: dict[str, Any]) -> str:
     """Dispatch to a topology-specific prompt builder.
 
     "nmos_current_mirror" (the default, for backward compatibility with the
@@ -1486,6 +1525,14 @@ def run_circuit_builder(
     plainly instead of crashing the API.
     """
     run_dir.mkdir(parents=True, exist_ok=True)
+
+    # Fail-fast preflight (Token_Optimizer audit item 2): if the run dir is
+    # not writable, abort HERE - a clear status, $0 spent - instead of paying
+    # for a session that dies (or worse, works around it) on its first Write.
+    preflight_error = preflight_write_check(run_dir)
+    if preflight_error:
+        return CircuitBuilderResult(status="failed", reason=preflight_error, cost_usd=0.0)
+
     _write_project_xschemrc(run_dir)
 
     deliverable = spec.get("deliverable") or "full"
@@ -1504,7 +1551,11 @@ def run_circuit_builder(
     prompt = build_prompt(spec)
     (run_dir / "prompt.txt").write_text(prompt)
 
-    cmd = [CLAUDE_BIN, "--agent", "Circuit_Builder", "--add-dir", str(PDK_ROOT)]
+    # Model routing (Token_Optimizer audit item 1): model-only deliverables
+    # run on Sonnet; full/schematic/symbol/stitch stay on the session default
+    # (fable-5). One routing table: invocation.MODEL_ROUTING.
+    cmd = [CLAUDE_BIN, "--agent", "Circuit_Builder", *model_args(deliverable),
+           "--add-dir", str(PDK_ROOT)]
     for tool in ALLOWED_TOOLS:
         cmd += ["--allowedTools", tool]
     for tool in disallowed_tools():
@@ -1572,6 +1623,22 @@ def run_circuit_builder(
             proc.kill()
             proc.wait(timeout=10)
 
+        # Drain whatever the CLI flushed on the way down (terminate paths
+        # break out of the loop without reading) - it may include the final
+        # result event with the run's real cost (audit item 4: book the
+        # spend of failed/cancelled/timed-out runs instead of undercounting).
+        try:
+            for line in proc.stdout:
+                raw_f.write(line)
+                try:
+                    ev = json.loads(line)
+                    if ev.get("type") == "result":
+                        final_event = ev
+                except json.JSONDecodeError:
+                    pass
+        except (OSError, ValueError):
+            pass
+
         if cancelled:
             human_f.write("[session] cancelled by user\n")
         elif timed_out:
@@ -1579,24 +1646,35 @@ def run_circuit_builder(
 
     duration_ms = int((time.time() - started) * 1000)
 
+    # Cost booking on abnormal endings (audit item 4): whatever the stream on
+    # disk says was spent, record it - do not report None/$0 for a run that
+    # actually burned tokens before dying.
+    failed_cost = booked_cost_usd(raw_log_path)
+
     if cancelled:
-        return CircuitBuilderResult(status="failed", reason="Cancelled by user", duration_ms=duration_ms)
+        return CircuitBuilderResult(
+            status="failed", reason="Cancelled by user",
+            cost_usd=failed_cost, duration_ms=duration_ms,
+        )
     if timed_out:
         return CircuitBuilderResult(
             status="failed",
             reason=f"Circuit_Builder invocation timed out after {timeout_s}s",
+            cost_usd=failed_cost,
             duration_ms=duration_ms,
         )
     if proc.returncode != 0:
         return CircuitBuilderResult(
             status="failed",
             reason=f"claude CLI exited with code {proc.returncode}",
+            cost_usd=failed_cost,
             duration_ms=duration_ms,
         )
     if final_event is None:
         return CircuitBuilderResult(
             status="failed",
             reason="claude CLI exited without emitting a final result event",
+            cost_usd=failed_cost,
             duration_ms=duration_ms,
         )
 

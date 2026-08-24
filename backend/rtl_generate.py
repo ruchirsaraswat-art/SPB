@@ -42,8 +42,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from circuit_builder import _format_event, disallowed_tools
+from circuit_builder import PROMPT_PREFLIGHT_LINE, _format_event, disallowed_tools
 from digital_blocks import ALL_DIGITAL_BLOCK_VALUES, DIGITAL_BLOCK_GROUPS
+from invocation import (
+    StreamCostEstimator,
+    booked_cost_usd,
+    model_args,
+    preflight_write_check,
+)
 from interfaces import normalize_interface, validate_interface
 from libraries import find_library_dir, validate_library_name
 from settings import libraries_root
@@ -58,6 +64,14 @@ POLL_INTERVAL_S = 1.0
 
 RTL_BLOCK_TIMEOUT_S = 1800  # comparable to schematic_only
 RTL_CONTROLLER_TIMEOUT_S = 5400  # the most expensive run type in the tool
+
+# Incremental cost cap for controller-scope runs (Token_Optimizer audit item
+# 4, 2026-08-23): at the observed ~$0.51/min burn a wedged 90-min controller
+# run could reach ~$45. The run loop keeps a running cost ESTIMATE from the
+# stream's per-turn usage events (no mid-stream event carries dollars) and
+# aborts the session honestly - reason "aborted: cost cap ..." - once it
+# crosses the cap. Overridable per request via spec["cost_cap_usd"].
+RTL_CONTROLLER_COST_CAP_USD = 10.0
 RERUN_COMPILE_TIMEOUT_S = 120
 RERUN_VVP_TIMEOUT_S = 300  # per-invocation watchdog on the server re-run
 
@@ -466,7 +480,7 @@ def build_rtl_prompt(
         f"plus the stitched top `{top}`"
     )
 
-    return f"""Generate and verify synthesizable RTL for {scope_line} of the {phy_type} PHY's
+    return PROMPT_PREFLIGHT_LINE + f"""Generate and verify synthesizable RTL for {scope_line} of the {phy_type} PHY's
 digital/controller side, in the CURRENT WORKING DIRECTORY ONLY (the tool's
 run directory). Do not touch any files outside this directory.
 
@@ -557,6 +571,14 @@ downgrade a false verified to failed.
 
 Finish with a brief (2-4 sentence) plain-English summary of what you
 generated and the verification outcome as your final reply.
+
+FINAL REMINDER (restating the requirement above): `rtl_summary.json` MUST
+exist in this directory before you finish - a single valid JSON object with
+exactly the schema shown above (scope, blocks[] with files/status/
+status_reason/checks/spec_citations{', top' if scope == 'controller' else ''}, findings), no markdown fences,
+parseable on its own. Write it even after a failure, with honest statuses. A
+run without a parseable rtl_summary.json is treated as failed regardless of
+what else succeeded.
 """
 
 
@@ -569,13 +591,27 @@ def run_rtl_coder(
     run_dir: Path,
     timeout_s: int,
     cancel_event: threading.Event | None = None,
+    run_type: str = "rtl_block",
+    cost_cap_usd: float | None = None,
 ) -> dict[str, Any]:
     """One headless RTL_Coder codegen session, cwd = the run dir (so the
     relative Write(**) scope is exactly that tree). Streams session.log /
     claude_stream.jsonl into run_dir. Returns {ok, reason, cost_usd,
     raw_text}. Module-level and monkeypatchable so the endpoint tests can
-    stub the agent and still exercise the real honesty check."""
-    cmd = [CLAUDE_BIN, "--agent", "RTL_Coder"]
+    stub the agent and still exercise the real honesty check.
+
+    `run_type` ("rtl_block"/"rtl_controller") feeds the explicit model
+    routing table (both currently inherit fable-5 - stated in code, not
+    implied). `cost_cap_usd` arms the incremental cost-cap abort: the loop
+    keeps a running usage-based estimate from the stream and terminates the
+    session with an honest "aborted: cost cap" reason when it crosses."""
+    # Fail-fast preflight (Token_Optimizer audit item 2): $0 spent if the
+    # run dir cannot be written.
+    preflight_error = preflight_write_check(run_dir)
+    if preflight_error:
+        return {"ok": False, "reason": preflight_error, "cost_usd": 0.0, "raw_text": ""}
+
+    cmd = [CLAUDE_BIN, "--agent", "RTL_Coder", *model_args(run_type)]
     for tool in ALLOWED_TOOLS:
         cmd += ["--allowedTools", tool]
     for tool in disallowed_tools():
@@ -599,6 +635,8 @@ def run_rtl_coder(
     final_event: dict[str, Any] | None = None
     timed_out = False
     cancelled = False
+    cap_hit = False
+    estimator = StreamCostEstimator()
     with open(run_dir / "session.log", "w") as human_f, open(
         run_dir / "claude_stream.jsonl", "w"
     ) as raw_f:
@@ -613,6 +651,10 @@ def run_rtl_coder(
                 timed_out = True
                 proc.terminate()
                 break
+            if cost_cap_usd is not None and estimator.cost_usd >= cost_cap_usd:
+                cap_hit = True
+                proc.terminate()
+                break
             ready, _, _ = select.select([proc.stdout], [], [], POLL_INTERVAL_S)
             if not ready:
                 if proc.poll() is not None:
@@ -623,6 +665,7 @@ def run_rtl_coder(
                 break
             raw_f.write(line)
             raw_f.flush()
+            estimator.feed_line(line)
             try:
                 ev = json.loads(line)
                 if ev.get("type") == "result":
@@ -633,23 +676,54 @@ def run_rtl_coder(
             if formatted:
                 human_f.write(formatted + "\n")
                 human_f.flush()
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=10)
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=10)
+        # Drain output flushed on the way down - it may include the final
+        # result event with the run's real cost (audit item 4).
+        try:
+            for line in proc.stdout:
+                raw_f.write(line)
+                estimator.feed_line(line)
+                try:
+                    ev = json.loads(line)
+                    if ev.get("type") == "result":
+                        final_event = ev
+                except json.JSONDecodeError:
+                    pass
+        except (OSError, ValueError):
+            pass
+        if cap_hit:
+            human_f.write(
+                f"[session] aborted: cost cap - estimated ${estimator.cost_usd:.2f} "
+                f">= cap ${cost_cap_usd:.2f}\n"
+            )
 
+    # Cost booking on abnormal endings (audit item 4): the last real cost
+    # event in the stream if the CLI flushed one, else the running estimate.
+    failed_cost = booked_cost_usd(run_dir / "claude_stream.jsonl", estimator)
+
+    if cap_hit:
+        return {"ok": False,
+                "reason": (
+                    f"aborted: cost cap - estimated ${estimator.cost_usd:.2f} spent "
+                    f">= cap ${cost_cap_usd:.2f} (override with cost_cap_usd in the request)"
+                ),
+                "cost_usd": failed_cost, "raw_text": ""}
     if cancelled:
-        return {"ok": False, "reason": "cancelled by user", "cost_usd": None, "raw_text": ""}
+        return {"ok": False, "reason": "cancelled by user",
+                "cost_usd": failed_cost, "raw_text": ""}
     if timed_out:
         return {"ok": False, "reason": f"RTL_Coder timed out after {timeout_s}s",
-                "cost_usd": None, "raw_text": ""}
+                "cost_usd": failed_cost, "raw_text": ""}
     if proc.returncode != 0:
         return {"ok": False, "reason": f"claude CLI exited with code {proc.returncode}",
-                "cost_usd": None, "raw_text": ""}
+                "cost_usd": failed_cost, "raw_text": ""}
     if final_event is None:
         return {"ok": False, "reason": "claude CLI exited without a final result event",
-                "cost_usd": None, "raw_text": ""}
+                "cost_usd": failed_cost, "raw_text": ""}
     cost = final_event.get("total_cost_usd")
     raw_text = final_event.get("result") or ""
     if final_event.get("is_error"):
@@ -945,8 +1019,19 @@ def execute_rtl_run(
     )
     (run_dir / "prompt.txt").write_text(prompt)
 
+    # Cost cap (audit item 4): controller scope defaults to
+    # RTL_CONTROLLER_COST_CAP_USD; the request can override (spec key
+    # cost_cap_usd); block scope has no default cap (bounded by its shorter
+    # timeout) but honors an explicit request cap.
+    cost_cap_usd = spec.get("cost_cap_usd")
+    if cost_cap_usd is None and scope == "controller":
+        cost_cap_usd = RTL_CONTROLLER_COST_CAP_USD
+
     started = time.time()
-    agent = run_rtl_coder(prompt, run_dir, rtl_timeout_for(scope), cancel_event)
+    agent = run_rtl_coder(
+        prompt, run_dir, rtl_timeout_for(scope), cancel_event,
+        run_type=f"rtl_{scope}", cost_cap_usd=cost_cap_usd,
+    )
     duration_ms = int((time.time() - started) * 1000)
 
     if not agent["ok"]:

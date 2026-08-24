@@ -34,8 +34,11 @@ from interfaces import DIRECTIONS, HANDSHAKES, RATES, SIGNAL_GROUPS
 
 
 def run_if_consultant(prompt, log_dir, log_stem, timeout_s=None):
-    """Thin, monkeypatchable wrapper over the shared consultant invocation."""
-    kwargs = {} if timeout_s is None else {"timeout_s": timeout_s}
+    """Thin, monkeypatchable wrapper over the shared consultant invocation.
+    run_type="if_chat" feeds the explicit model routing table (Sonnet)."""
+    kwargs = {"run_type": "if_chat"}
+    if timeout_s is not None:
+        kwargs["timeout_s"] = timeout_s
     return run_arch_consultant(prompt, log_dir, log_stem, **kwargs)
 
 

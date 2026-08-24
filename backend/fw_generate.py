@@ -49,8 +49,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from circuit_builder import _format_event, disallowed_tools
+from circuit_builder import PROMPT_PREFLIGHT_LINE, _format_event, disallowed_tools
 from interfaces import normalize_interface, validate_interface
+from invocation import booked_cost_usd, model_args, preflight_write_check
 from settings import firmware_root, fw_runs_root, working_dir
 
 CLAUDE_BIN = "claude"
@@ -149,7 +150,7 @@ def build_fw_generate_prompt(
 ) -> str:
     files = deliverable_files(if_name)
     prefix = if_name.upper()
-    return f"""Generate and verify the REGISTER LAYER firmware for the {phy_type} PHY's
+    return PROMPT_PREFLIGHT_LINE + f"""Generate and verify the REGISTER LAYER firmware for the {phy_type} PHY's
 AFE<->controller interface, in the CURRENT WORKING DIRECTORY ONLY (it is
 <working_dir>/firmware/{phy_type}/ per your charter). Do not touch any files
 outside this directory.
@@ -246,7 +247,17 @@ def run_firmware_coder(
     session.log / claude_stream.jsonl into run_dir. Returns {ok, reason,
     cost_usd}. Module-level and monkeypatchable so the endpoint tests can
     stub the agent and still exercise the real honesty check."""
-    cmd = [CLAUDE_BIN, "--agent", "Firmware_Coder"]
+    # Fail-fast preflight (Token_Optimizer audit item 2): both dirs the
+    # session touches must be writable before any money is spent.
+    preflight_error = preflight_write_check(fw_dir) or preflight_write_check(run_dir)
+    if preflight_error:
+        return {"ok": False, "reason": preflight_error, "cost_usd": 0.0}
+
+    # Model routing (audit item 1): fw_generate is Sonnet-routed. The
+    # Firmware_Coder charter also says `model: sonnet`, but the explicit
+    # --model flag is the mechanism this codebase relies on (it wins over
+    # frontmatter per the CLI docs) - see invocation.MODEL_ROUTING.
+    cmd = [CLAUDE_BIN, "--agent", "Firmware_Coder", *model_args("fw_generate")]
     for tool in ALLOWED_TOOLS:
         cmd += ["--allowedTools", tool]
     for tool in disallowed_tools():
@@ -298,18 +309,36 @@ def run_firmware_coder(
             if formatted:
                 human_f.write(formatted + "\n")
                 human_f.flush()
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=10)
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=10)
+        # Drain output flushed on the way down - it may include the final
+        # result event with the real cost (audit item 4).
+        try:
+            for line in proc.stdout:
+                raw_f.write(line)
+                try:
+                    ev = json.loads(line)
+                    if ev.get("type") == "result":
+                        final_event = ev
+                except json.JSONDecodeError:
+                    pass
+        except (OSError, ValueError):
+            pass
 
+    # Cost booking on abnormal endings (audit item 4).
+    failed_cost = booked_cost_usd(run_dir / "claude_stream.jsonl")
     if timed_out:
-        return {"ok": False, "reason": f"Firmware_Coder timed out after {timeout_s}s", "cost_usd": None}
+        return {"ok": False, "reason": f"Firmware_Coder timed out after {timeout_s}s",
+                "cost_usd": failed_cost}
     if proc.returncode != 0:
-        return {"ok": False, "reason": f"claude CLI exited with code {proc.returncode}", "cost_usd": None}
+        return {"ok": False, "reason": f"claude CLI exited with code {proc.returncode}",
+                "cost_usd": failed_cost}
     if final_event is None:
-        return {"ok": False, "reason": "claude CLI exited without a final result event", "cost_usd": None}
+        return {"ok": False, "reason": "claude CLI exited without a final result event",
+                "cost_usd": failed_cost}
     cost = final_event.get("total_cost_usd")
     if final_event.get("is_error"):
         return {"ok": False, "reason": "Firmware_Coder session reported an error", "cost_usd": cost}

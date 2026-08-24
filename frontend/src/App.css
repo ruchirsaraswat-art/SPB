@@ -204,6 +204,20 @@ header h1 {
   margin: -8px 0 14px;
 }
 
+/* Soft cost hint shown on the full-flow submit when behavioral-model
+   checkboxes are also ticked (Token_Optimizer audit finding 3, 2026-08-23:
+   split build + model-only runs are ~$2/cycle cheaper than one bundled
+   session). Informational only - cooler tint than .field-warning because it
+   never blocks or discourages submitting. */
+.cost-hint {
+  color: #93c5fd;
+  background: #16202e;
+  border-left: 3px solid #3b82f6;
+  border-radius: 3px;
+  padding: 6px 10px;
+  margin: -4px 0 14px;
+}
+
 /* FieldWithNote wrappers inside a .field-row need to flex like the bare
    labels do (the flex:1 on .spec-form label doesn't reach through the
    wrapper div). */

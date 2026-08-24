@@ -859,7 +859,10 @@ export default function SpecForm({
           <p className="hint">
             Ask Circuit_Builder to also write simulation models of this block at the checked
             abstraction levels, verified against the spec with self-checking testbenches where the
-            tools allow. Adds noticeable run time.
+            tools allow. Adds noticeable run time. Cost note: bundling models into the full flow
+            makes one long session that re-reads its own transcript each phase — running the build
+            first and then cheaper model-only runs (Generate dropdown below) against the filed cell
+            usually costs less overall.
           </p>
           {MODEL_TYPES.map((mt) => {
             const applicable = currentModels[mt.value] === true;
@@ -942,6 +945,13 @@ export default function SpecForm({
         );
       })()}
 
+      {spec.deliverable === "full" && spec.models.length > 0 && (
+        <p className="hint cost-hint" data-testid="split-run-cost-hint">
+          Cheaper alternative: run the build first, then model-only runs against the filed cell —
+          a bundled build+models session re-reads its whole transcript each phase (~$2 more per
+          run in the Aug 23 cost audit). This full run with models still works; it just costs more.
+        </p>
+      )}
       {!spec.library && (
         <p className="hint">Choose (or create) a design library above to enable the build.</p>
       )}

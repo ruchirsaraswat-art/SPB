@@ -251,7 +251,7 @@ def stub_coder(files: dict[str, str], summary: dict):
     """Stubbed RTL_Coder 'session': writes the given files + rtl_summary.json
     + per-module sim logs into the run dir and claims success."""
 
-    def stub(prompt, run_dir, timeout_s, cancel_event=None):
+    def stub(prompt, run_dir, timeout_s, cancel_event=None, **kwargs):
         run_dir = Path(run_dir)
         for name, content in files.items():
             (run_dir / name).write_text(content)

@@ -53,6 +53,7 @@ from typing import Any
 
 from digital_blocks import ALL_DIGITAL_BLOCK_VALUES, DIGITAL_BLOCKS_BY_PHY
 from firmware_blocks import ALL_FIRMWARE_BLOCK_VALUES, FIRMWARE_BLOCKS_BY_PHY
+from invocation import last_stream_cost_usd, model_args
 from topologies import ALL_TOPOLOGY_VALUES
 
 CLAUDE_BIN = "claude"
@@ -517,6 +518,7 @@ def run_arch_consultant(
     timeout_s: int = ARCH_CHAT_TIMEOUT_S,
     agent: str = "Circuit_Researcher",
     knowledge_dir: Path | None = None,
+    run_type: str = "arch_chat",
 ) -> ArchChatResult:
     """One synchronous consultant turn: `claude --agent <agent> -p <prompt>`
     with a read-only tool allowlist. Writes <log_stem>.log (human readable)
@@ -533,7 +535,11 @@ def run_arch_consultant(
     log_dir.mkdir(parents=True, exist_ok=True)
     (log_dir / f"{log_stem}.prompt.txt").write_text(prompt)
 
-    cmd = [CLAUDE_BIN, "--agent", agent, "--add-dir", str(knowledge_dir or KNOWLEDGE_BASE_DIR)]
+    # Model routing (Token_Optimizer audit item 1): all three consultant chat
+    # types (arch_chat/if_chat/fw_chat) are Sonnet-routed - one formulaic
+    # Q&A/patch turn each, no design work. Table: invocation.MODEL_ROUTING.
+    cmd = [CLAUDE_BIN, "--agent", agent, *model_args(run_type),
+           "--add-dir", str(knowledge_dir or KNOWLEDGE_BASE_DIR)]
     for tool in ALLOWED_TOOLS:
         cmd += ["--allowedTools", tool]
     cmd += ["--output-format", "stream-json", "--verbose", "-p", prompt]
@@ -585,22 +591,29 @@ def run_arch_consultant(
 
     duration_ms = int((time.time() - started) * 1000)
 
+    # Cost booking on abnormal endings (Token_Optimizer audit item 4): book
+    # whatever cost event made it into the stream instead of None.
+    failed_cost = last_stream_cost_usd(log_dir / f"{log_stem}.stream.jsonl")
+
     if timed_out:
         return ArchChatResult(
             status="failed",
             reason=f"consultant invocation timed out after {timeout_s}s",
+            cost_usd=failed_cost,
             duration_ms=duration_ms,
         )
     if proc.returncode != 0:
         return ArchChatResult(
             status="failed",
             reason=f"claude CLI exited with code {proc.returncode}",
+            cost_usd=failed_cost,
             duration_ms=duration_ms,
         )
     if final_event is None:
         return ArchChatResult(
             status="failed",
             reason="claude CLI exited without emitting a final result event",
+            cost_usd=failed_cost,
             duration_ms=duration_ms,
         )
     if final_event.get("is_error"):

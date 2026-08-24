@@ -1379,6 +1379,14 @@ class RtlGenerateRequest(BaseModel):
         description="Optional cell override (defaults: scope=block -> the block's module "
         "name; scope=controller top -> <phy>_controller_top)",
     )
+    cost_cap_usd: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Optional incremental cost-cap override in USD. Default: "
+        "controller scope aborts at $10 (estimated from the stream as the run "
+        "progresses); block scope has no default cap. The abort is honest: "
+        "status failed, reason 'aborted: cost cap', partial spend booked.",
+    )
 
 
 def _execute_rtl(run_id: str, run_dir: Path, spec: dict, cancel_event: threading.Event) -> None:
@@ -1445,6 +1453,7 @@ def post_rtl_generate(body: RtlGenerateRequest):
         "spec_doc_ids": body.spec_doc_ids or [],
         "library": body.library,
         "cell": body.cell,
+        "cost_cap_usd": body.cost_cap_usd,
         "deliverable": "rtl",
     }
     (run_dir / "spec.json").write_text(json.dumps(spec_dict, indent=2))

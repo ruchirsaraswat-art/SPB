@@ -123,10 +123,13 @@ ok("standalone section shares the per-type block verbatim",
 
 # --- timeouts / light-run classification ------------------------------------
 
-ok("timeouts: full unchanged, light modes shorter",
+# DEFAULT_TIMEOUT_S was trimmed 2400 -> 1800 (Token_Optimizer audit item 4,
+# 2026-08-23), so schematic_only (1800) now EQUALS the full-run timeout.
+ok("timeouts: full = trimmed default (1800), light modes shorter",
    cb.timeout_for(None) == cb.DEFAULT_TIMEOUT_S
+   and cb.DEFAULT_TIMEOUT_S == 1800
    and cb.timeout_for("full") == cb.DEFAULT_TIMEOUT_S
-   and cb.timeout_for("symbol") < cb.timeout_for("rnm") < cb.timeout_for("schematic_only") < cb.DEFAULT_TIMEOUT_S)
+   and cb.timeout_for("symbol") < cb.timeout_for("rnm") < cb.timeout_for("schematic_only") <= cb.DEFAULT_TIMEOUT_S)
 ok("light deliverables = symbol + model types",
    set(cb.LIGHT_DELIVERABLES) == {"symbol", "veriloga", "verilog", "rnm"})
 
