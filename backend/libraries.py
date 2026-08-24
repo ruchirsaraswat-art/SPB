@@ -1,5 +1,5 @@
 """
-Virtuoso-style library/cell/view organization for build results (user
+Hierarchical library/cell/view organization for build results (user
 request, cycle 2 addendum).
 
 How this maps onto xschem's actual "database" model (checked on this
@@ -10,7 +10,7 @@ file browser, and cells are just .sch/.sym files referenced by a path
 relative to some root (e.g. `sky130_fd_pr/nfet_01v8.sym`). The sky130 PDK's
 own xschem "library" is exactly that: a directory of .sym files.
 
-So the Virtuoso lib -> cell -> view hierarchy is imposed here as a directory
+So the lib -> cell -> view hierarchy is imposed here as a directory
 convention that xschem happily browses:
 
     libraries/                      <- LIBS_DIR, appended to every run's
@@ -50,9 +50,12 @@ from settings import all_libraries_roots, libraries_root
 _NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_\-]{0,63}$")
 
 # View files copied from a run dir into the cell, by summary/artifact key.
+# symbol_file/dc_log_file come from the deliverable-mode runs ("symbol" /
+# "schematic_only" - see RunSpec.deliverable); absent keys are just skipped.
 _ARTIFACT_KEYS = (
     "schematic_file", "schematic_png", "netlist_file",
     "testbench_file", "testbench_sch_file", "sim_log_file",
+    "symbol_file", "dc_log_file",
 )
 
 
@@ -66,7 +69,7 @@ def validate_library_name(name: str) -> None:
 
 
 def _view_kind(fname: str) -> str:
-    """Rough Virtuoso-view-style label for a file, for the API/UI listing."""
+    """Rough design-view label for a file, for the API/UI listing."""
     low = fname.lower()
     if low.endswith("_tb.spice") or low.endswith("_tb.sch"):
         return "testbench"
@@ -167,6 +170,127 @@ def create_library(name: str) -> dict[str, Any]:
     return {"name": name, "created": True, "already_existed": False, "path": str(lib_dir)}
 
 
+def find_cell_for_topology(library: str, topology: str) -> Optional[str]:
+    """Existing cell in `library` whose provenance records `topology`, or
+    None. Used by single-deliverable runs (symbol/model-only - no schematic
+    of their own to name a cell after) so their view files land in the SAME
+    cell an earlier full/schematic run created, instead of a parallel cell
+    named after the topology value. Latest filed_at wins on multiple hits."""
+    lib_dir = find_library_dir(library)
+    if lib_dir is None:
+        return None
+    best_cell: Optional[str] = None
+    best_filed = ""
+    for prov_path in lib_dir.glob("*/provenance.json"):
+        try:
+            prov = json.loads(prov_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if prov.get("topology") != topology:
+            continue
+        filed = prov.get("filed_at") or ""
+        if best_cell is None or filed > best_filed:
+            best_cell, best_filed = prov_path.parent.name, filed
+    return best_cell
+
+
+def validate_stitch_cell_map(
+    included_blocks: list[dict[str, Any]],
+    cell_map: dict[str, str] | None,
+) -> dict[str, tuple[str, str, bool]]:
+    """Validation for deliverable='arch_stitch': every included designable
+    block must be mapped to an existing library cell ("<library>/<cell>")
+    that has a SYMBOL view (<cell>.sym) - what the top-level schematic
+    instantiates directly - OR a schematic view (<cell>.sch) the run can
+    derive the symbol FROM (user request: the stitch generates missing
+    symbols itself, and they are filed back into the block's cell
+    afterwards). Returns {block_id: (library, cell, has_symbol)}. Raises
+    ValueError (a 422) listing every problem at once, so the user can fix
+    the whole placement map in one pass."""
+    cell_map = cell_map or {}
+    problems: list[str] = []
+    resolved: dict[str, tuple[str, str, bool]] = {}
+    for b in included_blocks:
+        bid = b["id"]
+        ref = cell_map.get(bid)
+        if not ref or "/" not in ref:
+            problems.append(
+                f"{bid}: no library cell mapped (expected \"<library>/<cell>\") - "
+                "file the block first (a full/schematic run), or exclude it"
+            )
+            continue
+        library, cell = ref.split("/", 1)
+        try:
+            validate_library_name(library)
+            validate_library_name(cell)
+        except ValueError as exc:
+            problems.append(f"{bid}: {exc}")
+            continue
+        lib_dir = find_library_dir(library)
+        cell_dir = (lib_dir / cell) if lib_dir else None
+        if cell_dir is None or not cell_dir.is_dir():
+            problems.append(f"{bid}: library cell {ref} does not exist")
+            continue
+        has_symbol = (cell_dir / f"{cell}.sym").is_file()
+        if not has_symbol and not (cell_dir / f"{cell}.sch").is_file():
+            problems.append(
+                f"{bid}: cell {ref} has neither a symbol view ({cell}.sym) nor a "
+                f"schematic view ({cell}.sch) to derive one from - build/file the "
+                "block first"
+            )
+            continue
+        resolved[bid] = (library, cell, has_symbol)
+    if problems:
+        raise ValueError(
+            "arch_stitch placement map problems: " + "; ".join(problems)
+        )
+    return resolved
+
+
+def file_generated_symbols(
+    cell_map: dict[str, str] | None,
+    symbols_generated: dict[str, str] | None,
+    run_dir: Path,
+) -> list[str]:
+    """Back-file the symbols an arch_stitch run generated (in its run dir)
+    into each block's OWN library cell, so the next stitch (and interactive
+    xschem) finds them as `<lib>/<cell>/<cell>.sym`. `symbols_generated` is
+    summary.json's {cell_name: sym_filename}; the owning library comes from
+    the run's placement map. Returns the list of "<lib>/<cell>/<sym>" refs
+    actually filed; skips (rather than fails on) entries whose source file
+    or target cell is missing - the caller records the list on the run."""
+    filed: list[str] = []
+    lib_of: dict[str, str] = {}
+    for ref in (cell_map or {}).values():
+        if isinstance(ref, str) and "/" in ref:
+            library, cell = ref.split("/", 1)
+            lib_of[cell] = library
+    for cell, sym in (symbols_generated or {}).items():
+        src = run_dir / sym
+        library = lib_of.get(cell)
+        if not library or not src.is_file():
+            continue
+        lib_dir = find_library_dir(library)
+        cell_dir = (lib_dir / cell) if lib_dir else None
+        if cell_dir is None or not cell_dir.is_dir():
+            continue
+        shutil.copy2(src, cell_dir / sym)
+        # Record the new view in the cell's provenance (merge, keep the rest).
+        prov_path = cell_dir / "provenance.json"
+        try:
+            prov = json.loads(prov_path.read_text()) if prov_path.exists() else {}
+        except (json.JSONDecodeError, OSError):
+            prov = {}
+        views = prov.get("views") or []
+        if sym not in views:
+            views.append(sym)
+        prov["views"] = views
+        prov["symbol_note"] = "symbol generated by an arch_stitch run and filed back"
+        prov_path.write_text(json.dumps(prov, indent=2))
+        filed.append(f"{library}/{cell}/{sym}")
+    return filed
+
+
 def file_run_into_library(
     library: str,
     run_id: str,
@@ -177,14 +301,28 @@ def file_run_into_library(
     """Copy a successful run's design views into libraries/<library>/<cell>/.
 
     Cell name = the schematic file's base name (what Circuit_Builder actually
-    called the circuit), falling back to the topology value. Returns
+    called the circuit). Runs with no schematic of their own (symbol/model-only
+    deliverable modes) update the library's existing cell for the same
+    topology when there is one - adding/replacing just their view files -
+    falling back to a cell named after the topology value. Returns
     {"library", "cell", "views": [copied filenames]}. Raises ValueError on a
     bad library name; IO problems propagate to the caller, which records
     them on the run rather than pretending the filing happened.
     """
     validate_library_name(library)
+    topology = spec.get("topology") or "cell"
     schematic = summary.get("schematic_file") or ""
-    cell = Path(schematic).stem if schematic else (spec.get("topology") or "cell")
+    if spec.get("cell"):
+        # The user explicitly targeted an existing cell (library cell picker):
+        # file there regardless of what the run named its files.
+        cell = spec["cell"]
+    elif schematic:
+        cell = Path(schematic).stem
+    elif summary.get("cell"):
+        # symbol/arch_model runs name their cell in summary.json
+        cell = summary["cell"]
+    else:
+        cell = find_cell_for_topology(library, topology) or topology
     # File into wherever the library actually lives (it may predate a
     # working-dir change and still sit under a previous root - keep its
     # cells together); a genuinely new library lands under the current root.
@@ -204,6 +342,10 @@ def file_run_into_library(
 
     for key in _ARTIFACT_KEYS:
         _copy(summary.get(key))
+    # arch_model runs: per-block model files + the top-level module.
+    _copy(summary.get("top_file"))
+    for fname in (summary.get("block_files") or {}).values():
+        _copy(fname)
     # Any symbol Circuit_Builder drew for the cell (makes it instantiable
     # from other schematics - the whole point of a library).
     for sym in run_dir.glob("*.sym"):
@@ -220,13 +362,28 @@ def file_run_into_library(
                 _copy(Path(mfile).stem + ".osdi")
     _copy("summary.json")
 
-    (cell_dir / "provenance.json").write_text(json.dumps({
+    # Views record = this run's copies plus any previously-filed views still
+    # on disk (a single-deliverable update run only replaces its own files -
+    # the earlier schematic/netlist views must stay recorded, not vanish
+    # from provenance because a symbol/model run re-filed the cell).
+    all_views = list(copied)
+    prov_path = cell_dir / "provenance.json"
+    if prov_path.exists():
+        try:
+            prev = json.loads(prov_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            prev = {}
+        for v in prev.get("views") or []:
+            if v not in all_views and (cell_dir / v).is_file():
+                all_views.append(v)
+    prov_path.write_text(json.dumps({
         "run_id": run_id,
         "topology": spec.get("topology"),
         "chosen_architecture": spec.get("chosen_architecture"),
         "label": spec.get("label"),
+        "deliverable": spec.get("deliverable") or "full",
         "filed_at": datetime.now(timezone.utc).isoformat(),
-        "views": copied,
+        "views": all_views,
     }, indent=2))
     copied.append("provenance.json")
 

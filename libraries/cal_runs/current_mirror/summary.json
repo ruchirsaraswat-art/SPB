@@ -1,68 +1,28 @@
 {
   "status": "success",
   "error": "",
-  "topology": "diode-connected NMOS reference + mirror output",
+  "deliverable": "rnm",
+  "topology": "NMOS current mirror (2-transistor - the flow this tool was originally built for)",
   "corner": "tt",
   "vdd_v": 1.8,
   "temp_c": 27.0,
-  "iref_target_ua": 10.0,
-  "ratio_target": "2.0:1.0",
-  "w_ref_um": 1.0,
-  "l_ref_um": 1.0,
-  "w_mirror_um": 2.0,
-  "sizing_note": "Plain W scale used as intended: M2 W=2.0um L=1.0um (nf=1 mult=1), well within sky130 nfet_01v8 width rules; no fingers/mult needed.",
-  "iref_simulated_ua": 10.0,
-  "iout_simulated_ua": 22.1166,
-  "ratio_measured": 2.21166,
-  "vds_mirror_v": 0.9,
-  "vgs_ref_v": 0.883752,
-  "schematic_png": "current_mirror.png",
-  "schematic_file": "current_mirror.sch",
-  "netlist_file": "current_mirror.spice",
-  "testbench_file": "current_mirror_tb.spice",
-  "sim_log_file": "sim.log",
-  "notes": "Sim converged (ngspice-45.2, tt, 27C). Measured ratio 2.212 vs 2.0 target (+10.6 percent): W-scaled sky130 nfet_01v8 devices do not mirror exactly by drawn-W ratio (effective-width/edge corrections dominate; Vds mismatch is only 0.9V vs 0.884V). M2 Vds forced to 0.9V (mid-supply) via VOUT for the .op. Agent-tool file writes were permission-denied in this directory, so all files (including this one) were authored through the allowed xschem Tcl interpreter instead of the Write tool; contents verified by Read after writing. Behavioral model defaults use achieved values (Iout=22.1166uA, Vcompliance=0.9V).",
+  "target_spec": {"iref_ua": 10.0, "ratio_out": 2.0, "ratio_ref": 1.0},
+  "notes": "Model-only run (no schematic/netlist/sizing). Judgment values for unspecified spec fields, documented in the model header: output resistance ROUT_OHM=500 kOhm (lambda~0.1/V at L=0.5um -> ro~1/(lambda*20uA)); reference diode-node voltage VGS_REF_V=0.65 V (sky130 nfet Vt~0.45V + Vov~0.2V); compliance onset VDSAT_V=0.20 V; mirror-ratio tempco 100 ppm/C; gate-node cap CG_TOT_F=50 fF and gm_ref=100 uA/V (2*Iref/Vov) giving the derived settling tau = Cg/gm = 500 ps (f_pole~318 MHz), TB checks 1%-settling at 5*tau=2500 ps. Sample tick TS=25 ps = tau/20. Not modeled: bidirectional impedance, sub-1% accuracy, noise, mismatch statistics, corners other than tt-baked judgment values, supply as analog net.",
   "models": {
-    "veriloga": {
-      "file": "nmos_current_mirror.va",
-      "testbench": "nmos_current_mirror_va_tb.spice",
-      "sim_log": "va_sim.log",
-      "status": "verified",
-      "status_reason": "openvaf compile clean; ngspice DC sweep testbench printed VA_TB_PASS (flatness within 5 percent above 0.9V compliance, rolloff to 76.3 percent of target at 0.3V confirmed)",
-      "checks": {
-        "iout_ua": {
-          "target": 22.1166,
-          "model_measured": 22.09723
-        },
-        "vds_mirror_v": {
-          "target": 0.9,
-          "model_measured": 0.9
-        },
-        "compliance_rolloff_frac_at_vc_over_3": {
-          "target": 0.8,
-          "model_measured": 0.76295
-        }
-      }
-    },
     "rnm": {
       "file": "nmos_current_mirror_rnm.sv",
       "testbench": "nmos_current_mirror_rnm_tb.sv",
       "sim_log": "rnm_sim.log",
       "status": "verified",
-      "status_reason": "iverilog -g2012 compile clean; vvp printed RNM_TB_PASS (worst flatness error above compliance 0.00494525, iout at vc/3 = 16.8439 uA = 0.762 of target confirming rolloff, mirror ratio 2.20072 vs expected 2.21166). Re-verified 2026-08-21 after iverilog 12.0 install (was generated_unverified).",
+      "status_reason": "iverilog -g2012 compiled cleanly; vvp exited 0 and printed RNM_TB_PASS with all 7 checks passing (Icarus Verilog 12.0)",
       "checks": {
-        "iout_ua": {
-          "target": 22.1166,
-          "model_measured": 22.0072
-        },
-        "ratio": {
-          "target": 2.21166,
-          "model_measured": 2.20072
-        },
-        "vds_mirror_v": {
-          "target": 0.9,
-          "model_measured": 0.9
-        }
+        "iout_ua": {"target": 20.0, "model_measured": 19.999045},
+        "ratio_out": {"target": 2.0, "model_measured": 1.999905},
+        "rout_kohm": {"target": 500.0, "model_measured": 499.784},
+        "tempco_ppm_c": {"target": 100.0, "model_measured": 100.523},
+        "compliance_iout_ua_at_0p1v": {"target": null, "model_measured": 9.450488},
+        "settle_remaining_frac_at_1tau": {"target": 0.368, "model_measured": 0.3679},
+        "settle_residual_pct_at_5tau": {"target": 1.0, "model_measured": 0.6693}
       }
     }
   }

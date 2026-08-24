@@ -1,0 +1,221 @@
+{
+  "name": "lpddr-dfi-if",
+  "phy_type": "lpddr",
+  "clock_domains": [
+    {
+      "name": "dfi_clk",
+      "freq_mhz": 100,
+      "owner": "external",
+      "source_block": null,
+      "description": "DFI clock from the memory-controller side; command/write/read channels and CSR domain. 1:2 ratio to the memory clock."
+    },
+    {
+      "name": "clk_dqs_rd",
+      "freq_mhz": 100,
+      "owner": "afe",
+      "source_block": "lpddr-dqs",
+      "description": "Read-capture strobe domain (DQS from the DRAM, delayed 90 deg by the AFE DLL). Only the read-capture FIFO write side lives here."
+    }
+  ],
+  "signals": [
+    {
+      "name": "dfi_address",
+      "direction": "ext",
+      "width": 7,
+      "clock_domain": "dfi_clk",
+      "rate": "word",
+      "rate_mhz": 100,
+      "group": "data",
+      "handshake": "valid",
+      "afe_block": null,
+      "digital_block": "cmd-path",
+      "meaning": "DFI command/address slots from the memory controller (LPDDR4-style 7-bit CA)."
+    },
+    {
+      "name": "dfi_wrdata",
+      "direction": "ext",
+      "width": 32,
+      "clock_domain": "dfi_clk",
+      "rate": "word",
+      "rate_mhz": 100,
+      "group": "data",
+      "handshake": "valid",
+      "afe_block": null,
+      "digital_block": "wr-path",
+      "meaning": "Write data from the MC, wrdata_en-qualified per the tphy_wrlat contract."
+    },
+    {
+      "name": "dfi_rddata",
+      "direction": "ext",
+      "width": 32,
+      "clock_domain": "dfi_clk",
+      "rate": "word",
+      "rate_mhz": 100,
+      "group": "data",
+      "handshake": "valid",
+      "afe_block": null,
+      "digital_block": "rd-path",
+      "meaning": "Read data back to the MC, qualified by dfi_rddata_valid per the trddata_en contract."
+    },
+    {
+      "name": "dfi_rddata_valid",
+      "direction": "ext",
+      "width": 1,
+      "clock_domain": "dfi_clk",
+      "rate": "word",
+      "rate_mhz": 100,
+      "group": "data",
+      "handshake": "none",
+      "afe_block": null,
+      "digital_block": "rd-path",
+      "meaning": "Qualifies dfi_rddata toward the memory controller."
+    },
+    {
+      "name": "dq_rddata",
+      "direction": "a2d",
+      "width": 8,
+      "clock_domain": "clk_dqs_rd",
+      "rate": "word",
+      "rate_mhz": 100,
+      "group": "data",
+      "handshake": "none",
+      "afe_block": "lpddr-rx",
+      "digital_block": "rd-path",
+      "meaning": "Captured DQ byte lane in the DQS read domain; crosses to dfi_clk through the read-capture FIFO."
+    },
+    {
+      "name": "dll_pi_code",
+      "direction": "d2a",
+      "width": 6,
+      "clock_domain": "dfi_clk",
+      "rate": "quasi_static",
+      "rate_mhz": null,
+      "group": "control",
+      "handshake": "level",
+      "afe_block": "lpddr-dqs",
+      "digital_block": "train",
+      "meaning": "AFE DLL/PI phase code for write-leveling / read-gate placement. Change only between bursts."
+    },
+    {
+      "name": "vref_dq_code",
+      "direction": "d2a",
+      "width": 6,
+      "clock_domain": "dfi_clk",
+      "rate": "quasi_static",
+      "rate_mhz": null,
+      "group": "control",
+      "handshake": "level",
+      "afe_block": "lpddr-vref",
+      "digital_block": "train",
+      "meaning": "Vref(DQ) trim DAC code from Vref training."
+    },
+    {
+      "name": "zq_code",
+      "direction": "d2a",
+      "width": 5,
+      "clock_domain": "dfi_clk",
+      "rate": "quasi_static",
+      "rate_mhz": null,
+      "group": "control",
+      "handshake": "level",
+      "afe_block": "lpddr-tx",
+      "digital_block": "zq",
+      "meaning": "Driver impedance code from the ZQ calibration FSM. Applied only while the bus is idle."
+    },
+    {
+      "name": "dfi_init_complete",
+      "direction": "ext",
+      "width": 1,
+      "clock_domain": "dfi_clk",
+      "rate": "word",
+      "rate_mhz": 100,
+      "group": "status",
+      "handshake": "level",
+      "afe_block": null,
+      "digital_block": "pwr-seq",
+      "meaning": "PHY init/training done, reported to the memory controller (DFI contract)."
+    },
+    {
+      "name": "rstn_por",
+      "direction": "ext",
+      "width": 1,
+      "clock_domain": "async",
+      "rate": "async_event",
+      "rate_mhz": null,
+      "group": "reset",
+      "handshake": "2ff_sync",
+      "afe_block": null,
+      "digital_block": "pwr-seq",
+      "meaning": "Chip POR, async assert; release synchronized per domain."
+    },
+    {
+      "name": "en_phy",
+      "direction": "d2a",
+      "width": 1,
+      "clock_domain": "dfi_clk",
+      "rate": "quasi_static",
+      "rate_mhz": null,
+      "group": "power",
+      "handshake": "level",
+      "afe_block": "lpddr-pll",
+      "digital_block": "pwr-seq",
+      "meaning": "Master AFE enable (PLL/DLL, drivers, receivers)."
+    }
+  ],
+  "cdc_points": [
+    {
+      "signal": "dq_rddata",
+      "from_domain": "clk_dqs_rd",
+      "to_domain": "dfi_clk",
+      "strategy": "async_fifo",
+      "notes": "This IS the read-capture FIFO in the digital diagram - absorbs round-trip flight-time variation between DQS and dfi_clk."
+    },
+    {
+      "signal": "rstn_por",
+      "from_domain": "async",
+      "to_domain": "dfi_clk",
+      "strategy": "2ff",
+      "notes": "Async assert, synchronized release."
+    }
+  ],
+  "reset_sequence": [
+    {
+      "step": 1,
+      "action": "POR asserts asynchronously; all enables cleared",
+      "signal": "rstn_por",
+      "wait_for": "-"
+    },
+    {
+      "step": 2,
+      "action": "POR release synchronized into each domain (2ff per domain)",
+      "signal": "rstn_por",
+      "wait_for": "2 clocks per domain"
+    }
+  ],
+  "power_sequence": [
+    {
+      "step": 1,
+      "action": "POR released, en_phy=0",
+      "signal": "rstn_por",
+      "wait_for": "-"
+    },
+    {
+      "step": 2,
+      "action": "Enable AFE (en_phy=1): PLL/DLL lock",
+      "signal": "en_phy",
+      "wait_for": "50 us settle (no lock status pin in v1 - add one if the AFE provides it)"
+    },
+    {
+      "step": 3,
+      "action": "Run ZQ calibration, apply zq_code",
+      "signal": "zq_code",
+      "wait_for": "ZQ FSM done"
+    },
+    {
+      "step": 4,
+      "action": "Run training (leveling/deskew/Vref), then assert dfi_init_complete",
+      "signal": "dfi_init_complete",
+      "wait_for": "training engine done"
+    }
+  ]
+}

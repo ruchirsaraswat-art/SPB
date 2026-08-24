@@ -50,6 +50,31 @@ _SUBDIRS = {
     "libraries": "libraries",
     "runs": "runs",
     "research_runs": "research_runs",
+    # Architecture-discussion chat transcripts (one JSON per session) and
+    # user-saved custom PHY architectures (one JSON per name) - see
+    # backend/arch_chat.py and the /api/arch_chat + /api/architectures
+    # endpoints in main.py.
+    "arch_chats": "arch_chats",
+    "architectures": "architectures",
+    # AFE<->digital interface workspace (2026-08-23 digital-arch spec):
+    # saved interface definitions (one JSON per name) and the interface
+    # consultant's chat transcripts - see backend/interfaces.py /
+    # backend/if_chat.py and the /api/interfaces + /api/if_chat endpoints.
+    "interfaces": "interfaces",
+    "if_chats": "if_chats",
+    # Firmware workspace (2026-08-23 firmware-section spec): firmware chat
+    # transcripts, the generated firmware source trees
+    # (firmware/<phy_type>/), and the per-fw_generate run bookkeeping
+    # (fw_runs/<run_id>/ - spec/status/logs, Token_Optimizer visibility) -
+    # see backend/fw_chat.py / backend/fw_generate.py.
+    "fw_chats": "fw_chats",
+    "firmware": "firmware",
+    "fw_runs": "fw_runs",
+    # Specification-document intake (2026-08-23 rtl-gen spec, section a):
+    # spec_docs/<phy_type>/<doc_id>.<ext> + <doc_id>.meta.json + the per-PHY
+    # _status.json answer file that suppresses the intake banner - see
+    # backend/spec_docs.py.
+    "spec_docs": "spec_docs",
 }
 
 
@@ -121,6 +146,38 @@ def research_root() -> Path:
     return _current_root("research_runs")
 
 
+def arch_chats_root() -> Path:
+    return _current_root("arch_chats")
+
+
+def architectures_root() -> Path:
+    return _current_root("architectures")
+
+
+def interfaces_root() -> Path:
+    return _current_root("interfaces")
+
+
+def if_chats_root() -> Path:
+    return _current_root("if_chats")
+
+
+def fw_chats_root() -> Path:
+    return _current_root("fw_chats")
+
+
+def firmware_root() -> Path:
+    return _current_root("firmware")
+
+
+def fw_runs_root() -> Path:
+    return _current_root("fw_runs")
+
+
+def spec_docs_root() -> Path:
+    return _current_root("spec_docs")
+
+
 def _all_roots(kind: str) -> list[Path]:
     """Current root first (created on demand), then every previous working
     dir's sub-root that actually exists on disk - newest-config first. This
@@ -144,6 +201,18 @@ def all_runs_roots() -> list[Path]:
 
 def all_research_roots() -> list[Path]:
     return _all_roots("research_runs")
+
+
+def all_architectures_roots() -> list[Path]:
+    return _all_roots("architectures")
+
+
+def all_interfaces_roots() -> list[Path]:
+    return _all_roots("interfaces")
+
+
+def all_spec_docs_roots() -> list[Path]:
+    return _all_roots("spec_docs")
 
 
 def validate_working_dir(raw: str) -> Path:

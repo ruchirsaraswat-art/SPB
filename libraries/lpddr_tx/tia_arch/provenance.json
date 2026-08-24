@@ -1,0 +1,15 @@
+{
+  "run_id": "6c48b799b053",
+  "topology": "custom",
+  "chosen_architecture": null,
+  "label": "optical architecture model (1 block)",
+  "deliverable": "arch_model",
+  "filed_at": "2026-08-22T21:29:59.869236+00:00",
+  "views": [
+    "tia_arch_tb.sv",
+    "arch_sim.log",
+    "tia_arch_rnm.sv",
+    "tia_rnm.sv",
+    "summary.json"
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "status": "success",
+  "error": "",
+  "deliverable": "arch_model",
+  "model_type": "rnm",
+  "cell": "ser_des_arch",
+  "top_file": "ser_des_arch_rnm.sv",
+  "block_files": {"rx-eq": "rx_eq_rnm.sv"},
+  "testbench_file": "ser_des_arch_tb.sv",
+  "sim_log_file": "arch_sim.log",
+  "model_status": "verified",
+  "status_reason": "",
+  "blocks_included": ["rx-eq"],
+  "notes": "Judgment defaults (no specs entered): 10 Gb/s NRZ chain default (UI=100 ps), CTLE DC gain 2.0 V/V (6 dB), single dominant pole at 5 GHz (Nyquist), output saturation +/-0.6 V, internal model tick 5 ps (<= 1/(20*f_pole) and <= 0.25 UI), 1.8 V supply as an informational parameter. Filter uses the exact ZOH one-pole update with ps->s conversion done once. DFE taps not modeled (would require sampler/CDR bit clock, not in this run) and no CTLE peaking zero (flat DC gain keeps the -3 dB check well-defined) - both documented in the model header. Single included block with no diagram edges, so rx_eq's vin/vout are promoted directly to top-level ports rx_in_v/rx_out_v. TB measured: DC vout=0.2 V (expected 0.2), pole-frequency amplitude 0.141423 V vs ideal 0.141421 V (-3 dB), saturation clamped at 0.6 V under 3x overdrive; ARCH_TB_PASS in arch_sim.log."
+}

@@ -1,13 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  blocksForPhy,
-  edgesForPhy,
-  userBlocksForPhy,
-  userBlocksKey,
-  hiddenBlocksForPhy,
-  hiddenBlocksKey,
-  levelStorageId,
-} from "./phyArchitectures";
+import { afeArchStore } from "./phyArchitectures";
 
 /**
  * Interactive wired block diagram of the complete PHY architecture. This IS
@@ -50,6 +42,18 @@ const STATUS_STYLE = {
 
 const PAD_STYLE = { fill: "#fff7ed", stroke: "#b45309", text: "#7c2d12" };
 const GROUP_STYLE = { fill: "#f1f5f9", stroke: "#475569", text: "#1e293b" };
+// Digital view accent: designable digital blocks are teal (vs the AFE view's
+// grey/status palette) and AFE/core boundary anchors (kind "iface") indigo -
+// same rounded "pad" treatment, instantly distinguishable from the AFE view.
+const DIGITAL_BLOCK_STYLE = { fill: "#f0fdfa", stroke: "#0d9488", text: "#134e4a" };
+const IFACE_STYLE = { fill: "#eef2ff", stroke: "#4f46e5", text: "#312e81" };
+// Firmware view accent (2026-08-23 firmware-section spec): amber/orange -
+// firmware blocks are SOFTWARE, so designable blocks also get a dashed border
+// and a small "SW" corner tag (echoing the overview chain's convention), and
+// selection deepens the amber instead of the blue the AFE/digital views use.
+// Iface anchors keep the indigo IFACE_STYLE, identical to the digital view.
+const FIRMWARE_BLOCK_STYLE = { fill: "#fffbeb", stroke: "#d97706", text: "#78350f" };
+const FIRMWARE_SELECTED_STYLE = { fill: "#fde68a", stroke: "#b45309", text: "#78350f" };
 
 const BLOCK_W = 148;
 const BLOCK_H = 64;
@@ -112,7 +116,39 @@ function slugify(name) {
 
 const NO_WIRE_EDITS = { removed: [], added: [] };
 
-export default function ArchitectureDiagram({ phyType, blockStates = {}, selectedBlock, onSelectBlock, topologyOptions = [] }) {
+// `version`: bumped by the parent whenever something OUTSIDE this component
+// edited the architecture records in localStorage (chat patch apply/undo,
+// saved-architecture load) - forces a re-read of blocks and wire edits.
+// `store`: which arch store (namespace + built-in archMap) backs the diagram -
+// afeArchStore (default, "arch-" keys) or digitalArchStore ("dig-arch-").
+// `variant`: "afe" (default), "digital" or "firmware" - the digital view
+// gets the teal block accent, no build-status captions/legend, and a
+// select-only hint (digital blocks are never fed to the spec-form/build
+// flow). "firmware" (2026-08-23 firmware-section spec) behaves exactly like
+// "digital" (select-only, iface anchors, no build captions/legend - firmware
+// blocks are never built through this diagram either) but carries a distinct
+// amber/orange accent (FIRMWARE_BLOCK_STYLE, dashed borders + "SW" tag, amber
+// selection) - `data-variant` on the wrapper is the CSS hook for the canvas tint.
+// `topologyGroups`: optional [{group, options:[{value,label}]}] - renders the
+// "Add block" topology picker with optgroups (used by the digital catalog);
+// falls back to the flat `topologyOptions` list.
+export default function ArchitectureDiagram({
+  phyType,
+  blockStates = {},
+  selectedBlock,
+  onSelectBlock,
+  topologyOptions = [],
+  version = 0,
+  store = afeArchStore,
+  variant = "afe",
+  topologyGroups = null,
+}) {
+  // "digital" and "firmware" are both select-only control-plane views (no
+  // build flow, iface anchors, no status captions/legend).
+  const isDigital = variant === "digital" || variant === "firmware";
+  const isFirmware = variant === "firmware";
+  // Selection/connect highlight stroke: amber in the firmware view, blue elsewhere.
+  const accentStroke = isFirmware ? "#b45309" : "#2563eb";
   const svgRef = useRef(null);
   const dragRef = useRef(null);
   const [path, setPath] = useState([]); // hierarchy: ancestor block ids, [] = top
@@ -134,9 +170,8 @@ export default function ArchitectureDiagram({ phyType, blockStates = {}, selecte
   const [groupSel, setGroupSel] = useState([]); // block ids picked for merging
   const [groupName, setGroupName] = useState("");
 
-  const levelId = levelStorageId(phyType, path);
-  const layoutKey = `arch-layout-${levelId}`;
-  const wiresKey = `arch-wires-${levelId}`;
+  const layoutKey = store.layoutKeyForPhy(phyType, path);
+  const wiresKey = store.wireEditsKey(phyType, path);
 
   useEffect(() => {
     setPath([]); // changing PHY type always starts back at the top level
@@ -160,20 +195,20 @@ export default function ArchitectureDiagram({ phyType, blockStates = {}, selecte
     setAddMode(false);
     setGroupMode(false);
     setGroupSel([]);
-  }, [layoutKey, wiresKey]);
+  }, [layoutKey, wiresKey, version]);
 
   const pathStr = path.join("/");
-  const blocks = useMemo(() => blocksForPhy(phyType, path), [phyType, pathStr, blocksVersion]); // eslint-disable-line react-hooks/exhaustive-deps
+  const blocks = useMemo(() => store.blocksForPhy(phyType, path), [store, phyType, pathStr, blocksVersion, version]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Breadcrumb labels: walk down the hierarchy resolving each ancestor.
   const crumbs = useMemo(() => {
     const out = [];
     for (let i = 0; i < path.length; i++) {
-      const blk = blocksForPhy(phyType, path.slice(0, i)).find((b) => b.id === path[i]);
+      const blk = store.blocksForPhy(phyType, path.slice(0, i)).find((b) => b.id === path[i]);
       out.push({ id: path[i], label: blk?.short || path[i] });
     }
     return out;
-  }, [phyType, pathStr, blocksVersion]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [store, phyType, pathStr, blocksVersion, version]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!phyType || blocks.length === 0) {
     if (path.length > 0) {
@@ -208,7 +243,7 @@ export default function ArchitectureDiagram({ phyType, blockStates = {}, selecte
   // Wires actually drawn: this level's signal-flow edges minus deletions,
   // plus manual connections (skipping any whose blocks don't exist - deleted
   // blocks take their wires with them).
-  const defaultConns = edgesForPhy(phyType, path);
+  const defaultConns = store.edgesForPhy(phyType, path);
   const conns = [];
   const seen = new Set();
   for (const c of [...defaultConns.filter((c) => !wireEdits.removed.includes(connKey(c))), ...wireEdits.added]) {
@@ -218,9 +253,10 @@ export default function ArchitectureDiagram({ phyType, blockStates = {}, selecte
     conns.push({ ...c, key });
   }
 
-  const usedStatuses = [
-    ...new Set(blocks.filter((b) => b.topology).map((b) => (blockStates[b.id] || {}).status || "todo")),
-  ];
+  // The digital view has no build flow - no status captions, no legend.
+  const usedStatuses = isDigital
+    ? []
+    : [...new Set(blocks.filter((b) => b.topology).map((b) => (blockStates[b.id] || {}).status || "todo"))];
 
   function bumpBlocks() {
     setBlocksVersion((v) => v + 1);
@@ -258,7 +294,7 @@ export default function ArchitectureDiagram({ phyType, blockStates = {}, selecte
 
   function saveUserBlocks(list) {
     try {
-      localStorage.setItem(userBlocksKey(phyType, path), JSON.stringify(list));
+      localStorage.setItem(store.userBlocksKey(phyType, path), JSON.stringify(list));
     } catch {
       // localStorage unavailable
     }
@@ -266,7 +302,7 @@ export default function ArchitectureDiagram({ phyType, blockStates = {}, selecte
 
   function saveHiddenBlocks(list) {
     try {
-      localStorage.setItem(hiddenBlocksKey(phyType, path), JSON.stringify(list));
+      localStorage.setItem(store.hiddenBlocksKey(phyType, path), JSON.stringify(list));
     } catch {
       // localStorage unavailable
     }
@@ -291,7 +327,7 @@ export default function ArchitectureDiagram({ phyType, blockStates = {}, selecte
       row: maxRow + 1, // drops in below the diagram - drag it into place
       user: true,
     };
-    saveUserBlocks([...userBlocksForPhy(phyType, path), block]);
+    saveUserBlocks([...store.userBlocksForPhy(phyType, path), block]);
     bumpBlocks();
     setAddMode(false);
     setNewBlockName("");
@@ -352,8 +388,8 @@ export default function ArchitectureDiagram({ phyType, blockStates = {}, selecte
 
     // Members leave this level: user blocks are removed from the list,
     // default blocks are hidden.
-    saveUserBlocks([...userBlocksForPhy(phyType, path).filter((b) => !sel.has(b.id)), group]);
-    saveHiddenBlocks([...hiddenBlocksForPhy(phyType, path), ...members.filter((b) => !b.user).map((b) => b.id)]);
+    saveUserBlocks([...store.userBlocksForPhy(phyType, path).filter((b) => !sel.has(b.id)), group]);
+    saveHiddenBlocks([...store.hiddenBlocksForPhy(phyType, path), ...members.filter((b) => !b.user).map((b) => b.id)]);
     bumpBlocks();
     setGroupMode(false);
     setGroupSel([]);
@@ -366,10 +402,10 @@ export default function ArchitectureDiagram({ phyType, blockStates = {}, selecte
     if (block.user && block.kind === "group") {
       const memberIds = new Set((block.children?.blocks || []).map((b) => b.id));
       saveUserBlocks([
-        ...userBlocksForPhy(phyType, path).filter((b) => b.id !== block.id),
+        ...store.userBlocksForPhy(phyType, path).filter((b) => b.id !== block.id),
         ...(block.children?.blocks || []).filter((b) => b.user),
       ]);
-      saveHiddenBlocks(hiddenBlocksForPhy(phyType, path).filter((id) => !memberIds.has(id)));
+      saveHiddenBlocks(store.hiddenBlocksForPhy(phyType, path).filter((id) => !memberIds.has(id)));
       // restore the default wires that were removed when the group formed
       saveWireEdits({
         removed: wireEdits.removed.filter((k) => {
@@ -379,9 +415,9 @@ export default function ArchitectureDiagram({ phyType, blockStates = {}, selecte
         added: wireEdits.added.filter((c) => c.from !== block.id && c.to !== block.id),
       });
     } else if (block.user) {
-      saveUserBlocks(userBlocksForPhy(phyType, path).filter((b) => b.id !== block.id));
+      saveUserBlocks(store.userBlocksForPhy(phyType, path).filter((b) => b.id !== block.id));
     } else {
-      saveHiddenBlocks([...hiddenBlocksForPhy(phyType, path), block.id]);
+      saveHiddenBlocks([...store.hiddenBlocksForPhy(phyType, path), block.id]);
     }
     if (connectSource === block.id) setConnectSource(null);
     setGroupSel((g) => g.filter((id) => id !== block.id));
@@ -461,8 +497,9 @@ export default function ArchitectureDiagram({ phyType, blockStates = {}, selecte
     try {
       localStorage.removeItem(layoutKey);
       localStorage.removeItem(wiresKey);
-      localStorage.removeItem(userBlocksKey(phyType, path));
-      localStorage.removeItem(hiddenBlocksKey(phyType, path));
+      localStorage.removeItem(store.userBlocksKey(phyType, path));
+      localStorage.removeItem(store.hiddenBlocksKey(phyType, path));
+      localStorage.removeItem(store.blockOverridesKey(phyType, path));
     } catch {
       // ignore
     }
@@ -501,7 +538,7 @@ export default function ArchitectureDiagram({ phyType, blockStates = {}, selecte
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
       const a = document.createElement("a");
-      a.download = `${[phyType, ...path].join("-")}-architecture.png`;
+      a.download = `${[...(variant !== "afe" ? [variant] : []), phyType, ...path].join("-")}-architecture.png`;
       a.href = canvas.toDataURL("image/png");
       a.click();
     };
@@ -514,10 +551,12 @@ export default function ArchitectureDiagram({ phyType, blockStates = {}, selecte
     ? connectSource
       ? "Connect: now click the target block (or the source again to cancel)"
       : "Connect: click the source block"
+    : isDigital
+    ? `Click a block to highlight it (${variant} blocks aren't built through this diagram in v1) - drag to rearrange - right-click deletes (ungroups a group) - [+] drills into a block - click a wire, then its x, to delete it.`
     : "Click a block to design it - drag to rearrange - right-click deletes (ungroups a group) - [+] drills into a block - click a wire, then its x, to delete it.";
 
   return (
-    <div className="arch-diagram">
+    <div className="arch-diagram" data-variant={variant}>
       {(path.length > 0 || crumbs.length > 0) && (
         <div className="arch-breadcrumb">
           <button type="button" className="toggle-raw" onClick={() => setPath([])}>
@@ -563,12 +602,22 @@ export default function ArchitectureDiagram({ phyType, blockStates = {}, selecte
             onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addBlock())}
           />
           <select value={newBlockTopo} onChange={(e) => setNewBlockTopo(e.target.value)}>
-            <option value="">topology...</option>
-            {topologyOptions.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
+            <option value="">{isDigital ? "block type..." : "topology..."}</option>
+            {topologyGroups && topologyGroups.length > 0
+              ? topologyGroups.map((g) => (
+                  <optgroup key={g.group} label={g.group}>
+                    {g.options.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))
+              : topologyOptions.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
           </select>
           <button type="button" onClick={addBlock} disabled={!newBlockName.trim() || !newBlockTopo}>
             Add
@@ -665,15 +714,25 @@ export default function ArchitectureDiagram({ phyType, blockStates = {}, selecte
             );
           })}
           {blocks.map((b) => {
-            const isPad = b.kind === "pad";
+            // Boundary anchors: "pad" (AFE view) and "iface" (digital view's
+            // AFE/core/host boundary nodes) - drawn rounded/muted, wireable,
+            // draggable, never selectable as a design target.
+            const isPad = b.kind === "pad" || b.kind === "iface";
             const isGroup = !!b.children;
             const st = blockStates[b.id] || {};
             const status = selectedBlock === b.id && (st.status || "todo") === "todo" ? "selected" : st.status || "todo";
-            const style = isPad
-              ? PAD_STYLE
-              : b.kind === "group"
-              ? GROUP_STYLE
-              : STATUS_STYLE[status] || STATUS_STYLE.todo;
+            const style =
+              b.kind === "iface"
+                ? IFACE_STYLE
+                : isPad
+                ? PAD_STYLE
+                : b.kind === "group"
+                ? GROUP_STYLE
+                : isFirmware
+                ? (selectedBlock === b.id ? FIRMWARE_SELECTED_STYLE : FIRMWARE_BLOCK_STYLE)
+                : isDigital
+                ? (selectedBlock === b.id ? STATUS_STYLE.selected : DIGITAL_BLOCK_STYLE)
+                : STATUS_STYLE[status] || STATUS_STYLE.todo;
             const { x, y } = pos[b.id];
             const cx = x + BLOCK_W / 2;
             // Non-designable blocks (pads, groups, photodiode, digital cal)
@@ -704,17 +763,41 @@ export default function ArchitectureDiagram({ phyType, blockStates = {}, selecte
                   height={BLOCK_H}
                   rx={isPad ? 16 : 8}
                   fill={style.fill}
-                  stroke={isConnSource || inGroupSel || selectedBlock === b.id ? "#2563eb" : style.stroke}
+                  stroke={isConnSource || inGroupSel || selectedBlock === b.id ? accentStroke : style.stroke}
                   strokeWidth={isConnSource || inGroupSel || selectedBlock === b.id ? 3 : 1.5}
-                  strokeDasharray={isConnSource || inGroupSel ? "6 4" : b.kind === "group" ? "3 3" : undefined}
+                  strokeDasharray={
+                    isConnSource || inGroupSel
+                      ? "6 4"
+                      : b.kind === "group"
+                      ? "3 3"
+                      : isFirmware && b.topology
+                      ? "5 3" // firmware blocks are software - dashed like the overview's SW block
+                      : undefined
+                  }
                 />
+                {isFirmware && b.topology && (
+                  <g pointerEvents="none">
+                    <rect x={x + BLOCK_W - 27} y={y + 5} width={22} height={13} rx={3} fill="#fef3c7" stroke="#d97706" strokeWidth="1" />
+                    <text x={x + BLOCK_W - 16} y={y + 15} fontSize="8" fontWeight="700" fill="#92400e" textAnchor="middle">
+                      SW
+                    </text>
+                  </g>
+                )}
                 <text x={cx} y={y + 24} fontSize="13" fontWeight="600" fill={style.text} textAnchor="middle" pointerEvents="none">
                   {b.short}
                 </text>
                 <text x={cx} y={y + 42} fontSize="10" fill={style.text} textAnchor="middle" pointerEvents="none">
-                  {b.topology ? b.topology : isPad ? "I/O pad" : b.kind === "group" ? "group (drill in)" : "not designable here"}
+                  {b.topology
+                    ? b.topology
+                    : b.kind === "iface"
+                    ? "boundary IF"
+                    : isPad
+                    ? "I/O pad"
+                    : b.kind === "group"
+                    ? "group (drill in)"
+                    : "not designable here"}
                 </text>
-                {b.topology && (
+                {b.topology && !isDigital && (
                   <text x={cx} y={y + BLOCK_H + 14} fontSize="10" fill={style.stroke} textAnchor="middle" pointerEvents="none">
                     {STATUS_STYLE[status].label}
                   </text>

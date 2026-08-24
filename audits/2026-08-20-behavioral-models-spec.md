@@ -505,12 +505,12 @@ still apply once it is explicitly chosen. Verified headlessly (13/13 checks;
 screenshots `2026-08-20-cycle2-empty-start-screen.png`,
 `2026-08-20-cycle2-after-block-click.png`). File: frontend/src/SpecForm.jsx.
 
-### Addendum 2 (same session, user request): Virtuoso-style design libraries
+### Addendum 2 (same session, user request): hierarchical design libraries (lib/cell/view)
 How xschem actually handles "database" structure (checked on this machine):
 there is no design database - XSCHEM_LIBRARY_PATH in xschemrc is a list of
 directory roots, each directory on it is a "library" in the browser, and
 cells are plain .sch/.sym files referenced by root-relative path (the sky130
-PDK's xschem library is exactly that). The Virtuoso lib -> cell -> view
+PDK's xschem library is exactly that). The lib -> cell -> view
 hierarchy is therefore imposed as a directory convention xschem can browse:
 `libraries/<library>/<cell>/<view files>` (schematic/symbol/netlist/
 testbench/image/behavioral-model/measurement views + provenance.json naming

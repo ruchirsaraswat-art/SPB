@@ -5,8 +5,36 @@ import ResultsView from "./ResultsView";
 import LogPanel from "./LogPanel";
 import SchematicPanel from "./SchematicPanel";
 import SettingsPanel from "./SettingsPanel";
-import { createRun, getRun, createResearch, getResearch, cancelRun, cancelResearch, listRuns, getSettings } from "./api";
+import ArchChatSidebar from "./ArchChatSidebar";
+import InterfaceEditor from "./InterfaceEditor";
+import DigitalArchPanel from "./DigitalArchPanel";
+import FirmwarePanel from "./FirmwarePanel";
+import PhyOverviewPanel from "./PhyOverviewPanel";
+import PhyTypeSelect from "./PhyTypeSelect";
+import { createRun, getRun, createResearch, getResearch, cancelRun, cancelResearch, listRuns, getSettings, listArchitectures, rtlGenerate } from "./api";
+import { loadArchitectureIntoPhy } from "./phyArchitectures";
 import "./App.css";
+
+// The workbench workspaces (2026-08-23 digital-arch spec, section d; layout
+// + naming revised per user request the same day): below the top-level "PHY
+// architecture" overview, the AFE diagram+spec form, the interface table
+// editor and the controller (digital) architecture are stacked ONE BELOW
+// THE OTHER at full width - mirroring the physical signal path
+// AFE -> interface -> controller - each individually minimizable to its
+// header bar. One panel is "focused" at a time (click its header) and the
+// chat sidebar context-switches with it (arch_chat view afe / if_chat /
+// arch_chat view digital). "Controller" is a DISPLAY name only: internal
+// ids, session ids, localStorage namespaces and the API view value stay
+// "digital"/"interface".
+// "Firmware" (2026-08-23 firmware-section spec) is the fifth stacked panel,
+// at the bottom to match the control-plane chain order
+// (AFE -> interface -> controller -> firmware).
+const WORKSPACES = [
+  { id: "afe", title: "PHY / AFE architecture" },
+  { id: "interface", title: "AFE ↔ Controller interface" },
+  { id: "digital", title: "PHY / Controller architecture" },
+  { id: "firmware", title: "PHY / Firmware" },
+];
 
 // Message to show in the error box. api.js throws Error objects whose
 // .message is already formatted for display (including multi-line 422
@@ -62,6 +90,106 @@ export default function App() {
   useEffect(() => {
     refreshRuns();
   }, [refreshRuns]);
+
+  // Arch-chat feature: the displayed architecture is mutable (chat patches,
+  // saved-architecture loads) - archVersion bumps whenever it was edited
+  // outside the diagram component so the diagram re-reads its records, and
+  // customArchs feeds the "Custom (saved architectures)" optgroup in the
+  // PHY selector (built-ins stay static in phyArchitectures.js).
+  const [archVersion, setArchVersion] = useState(0);
+  // Same version-bump pattern for the other two workspaces: the digital
+  // diagram's "dig-arch-" records and the interface working copy are both
+  // mutated outside their panels (chat patch apply/undo in the sidebar), so
+  // a bump tells them to re-read.
+  const [digVersion, setDigVersion] = useState(0);
+  const [ifVersion, setIfVersion] = useState(0);
+  const [fwVersion, setFwVersion] = useState(0);
+  const bumpInterface = useCallback(() => setIfVersion((v) => v + 1), []);
+  // The sidebar reports which diagram workspace it edited
+  // ("afe"/"digital"/"firmware").
+  const handleArchEdited = useCallback((workspace) => {
+    if (workspace === "digital") setDigVersion((v) => v + 1);
+    else if (workspace === "firmware") setFwVersion((v) => v + 1);
+    else setArchVersion((v) => v + 1);
+  }, []);
+  // Which workspace panel is focused; the chat sidebar follows it.
+  const [focusedWorkspace, setFocusedWorkspace] = useState("afe");
+  // Per-panel minimize (collapse to the header bar) - independent of focus.
+  // "overview" is the top-level PHY-architecture depiction (navigational
+  // only, not a chat workspace). Default on load (user request, 2026-08-23):
+  // ONLY the overview starts expanded - the workspace panels all start
+  // minimized and are opened via the overview blocks (which un-minimize +
+  // scroll) or their own header buttons. Minimize state is deliberately not
+  // persisted, so this collapsed default applies on every load.
+  const [minimized, setMinimized] = useState({
+    overview: false,
+    afe: true,
+    interface: true,
+    digital: true,
+    firmware: true,
+  });
+  const toggleMinimized = useCallback((id) => {
+    setMinimized((m) => ({ ...m, [id]: !m[id] }));
+  }, []);
+  // Overview-block navigation (UX fix, 2026-08-23): with the stacked layout
+  // the target workspace can be off-screen, so clicking an overview block
+  // must do more than set focus - it un-minimizes the target panel and
+  // scrolls it into view. The scroll happens in an effect (after React has
+  // committed the un-minimize) via a ref on each workspace <section>;
+  // `n` makes repeat clicks on the same block re-trigger the effect.
+  // The panels carry scroll-margin-top in CSS so the title lands clear of
+  // any sticky bar.
+  const workspaceRefs = useRef({});
+  const [scrollTarget, setScrollTarget] = useState(null); // { id, n }
+  useEffect(() => {
+    if (!scrollTarget) return;
+    workspaceRefs.current[scrollTarget.id]?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [scrollTarget]);
+  const handleOverviewFocus = useCallback((id) => {
+    setFocusedWorkspace(id); // keep the chat sidebar following
+    setMinimized((m) => (m[id] ? { ...m, [id]: false } : m));
+    setScrollTarget({ id, n: Date.now() });
+  }, []);
+  const [customArchs, setCustomArchs] = useState([]);
+  const refreshCustomArchs = useCallback(() => {
+    listArchitectures()
+      .then((d) => setCustomArchs(d.architectures || []))
+      .catch(() => {});
+  }, []);
+  useEffect(() => {
+    refreshCustomArchs();
+  }, [refreshCustomArchs]);
+
+  const handleLoadCustomArch = useCallback((entry, phy) => {
+    loadArchitectureIntoPhy(phy, entry.architecture);
+    setArchVersion((v) => v + 1);
+  }, []);
+
+  // The PHY Type / Architecture pull-down (moved out of SpecForm into the
+  // overview panel's header, user request 2026-08-23): App owns the choice
+  // because switching PHY type re-targets all three workspaces. archChoice
+  // is what the <select> shows (built-in value or "custom:<name>"); phyType
+  // is the resulting active PHY, pushed down into SpecForm as a controlled
+  // prop (which clears its selected block on change - same contract as when
+  // the select lived inside the form).
+  const [archChoice, setArchChoice] = useState("ser-des");
+  const [phyType, setPhyType] = useState("ser-des");
+  const handlePhyChoice = useCallback(
+    (v) => {
+      setArchChoice(v);
+      if (v.startsWith("custom:")) {
+        const entry = customArchs.find((a) => a.name === v.slice("custom:".length));
+        if (entry) {
+          const phy = entry.phy_type || phyType;
+          handleLoadCustomArch(entry, phy);
+          setPhyType(phy);
+        }
+      } else {
+        setPhyType(v);
+      }
+    },
+    [customArchs, phyType, handleLoadCustomArch]
+  );
 
   // Tool settings (cycle 5): where the tool creates runs/libraries. Fetched
   // once here and passed down so the spec form can show where things will
@@ -161,6 +289,14 @@ export default function App() {
     setResearch(null);
     setPendingSpec(spec);
 
+    // Symbol-only, model-only and architecture-model deliverables skip the
+    // Circuit_Researcher step entirely: there is no single architecture to
+    // choose (no transistor-level design happens).
+    if (["symbol", "veriloga", "verilog", "rnm", "arch_model", "arch_stitch"].includes(spec.deliverable)) {
+      await launchBuild(spec);
+      return;
+    }
+
     setResearching(true);
     try {
       const researchSpec = {
@@ -183,6 +319,26 @@ export default function App() {
       startResearchPolling(research_id);
     } catch (e) {
       setResearching(false);
+      setError(errText(e));
+    }
+  }
+
+  // RTL generation (2026-08-23 rtl-gen spec): the controller panel submits a
+  // full rtl_generate request; the run then polls/display exactly like every
+  // other run (deliverable "rtl" - ResultsView renders the RTL section).
+  async function handleRtlSubmit(request) {
+    setError(null);
+    setResearch(null);
+    setPendingSpec(null);
+    setRun(null);
+    setSubmitting(true);
+    try {
+      const { run_id } = await rtlGenerate(request);
+      const initial = await getRun(run_id);
+      setRun(initial);
+      startRunPolling(run_id);
+    } catch (e) {
+      setSubmitting(false);
       setError(errText(e));
     }
   }
@@ -319,7 +475,9 @@ export default function App() {
             {activeResearch
               ? "Circuit_Researcher is running..."
               : activeRun
-              ? "Circuit_Builder is running..."
+              ? run?.deliverable === "rtl"
+                ? "RTL_Coder is running..."
+                : "Circuit_Builder is running..."
               : "Starting..."}
           </span>
           <button className="stop-btn" onClick={handleStopActive} disabled={stopping || !canStopNow}>
@@ -330,28 +488,135 @@ export default function App() {
       )}
 
       <main>
-        {/* Schematic sub-window (cycle 4): rides alongside the spec form and
-            follows whatever block/topology is currently highlighted; nothing
-            selected -> full-width form, no dangling empty panel. */}
-        <div className={archView.topology ? "split-panels form-with-schematic" : undefined}>
-          <div className="panel">
-            <SpecForm
-              onSubmit={handleSubmit}
-              submitting={researching || submitting}
-              onArchChange={handleArchChange}
-              blockStates={blockStates}
-              settings={settings}
-            />
+        {/* Workbench (2026-08-23, layout per user request): the three
+            workspace panels - PHY/AFE architecture, digital architecture,
+            AFE<->digital interface - stacked one below the other at full
+            width. Each is individually minimizable to its header bar; one
+            is "focused" (click a header) and the chat sidebar on the right
+            context-switches with it. */}
+        <div className="drawing-with-chat">
+          <div className="drawing-main workbench">
+            {/* Top-level PHY architecture: Controller + AFE blocks joined by
+                the interface - static + navigational (clicking a block
+                focuses its workspace). Not a chat workspace of its own. */}
+            <section
+              className={`panel workspace-panel overview-panel ${minimized.overview ? "minimized" : ""}`}
+              data-workspace="overview"
+            >
+              <header className="workspace-head overview-head">
+                <span className="overview-head-left">
+                  <h2>PHY architecture</h2>
+                  {/* Selector kept in the HEADER (not the body) so it stays
+                      reachable while the overview panel is minimized. */}
+                  <PhyTypeSelect archChoice={archChoice} customArchs={customArchs} onChange={handlePhyChoice} />
+                </span>
+                <span className="workspace-head-right">
+                  <button
+                    type="button"
+                    className="toggle-raw workspace-min-btn"
+                    onClick={() => toggleMinimized("overview")}
+                    title={minimized.overview ? "Expand the PHY architecture overview" : "Minimize the PHY architecture overview to its header"}
+                  >
+                    {minimized.overview ? "Expand" : "Minimize"}
+                  </button>
+                </span>
+              </header>
+              {!minimized.overview && (
+                <div className="workspace-body">
+                  <PhyOverviewPanel
+                    phyType={archView.phy_type}
+                    focusedWorkspace={focusedWorkspace}
+                    onFocus={handleOverviewFocus}
+                  />
+                </div>
+              )}
+            </section>
+            {WORKSPACES.map(({ id, title }) => (
+              <section
+                key={id}
+                ref={(el) => (workspaceRefs.current[id] = el)}
+                className={`panel workspace-panel ${focusedWorkspace === id ? "focused" : "unfocused"} ${minimized[id] ? "minimized" : ""}`}
+                data-workspace={id}
+              >
+                <header
+                  className="workspace-head"
+                  onClick={() => setFocusedWorkspace(id)}
+                  title={focusedWorkspace === id ? undefined : `Focus the ${title} workspace (the chat follows it)`}
+                >
+                  <h2>{title}</h2>
+                  <span className="workspace-head-right">
+                    {focusedWorkspace === id ? (
+                      <span className="workspace-focus-hint focused-hint">chat follows this panel</span>
+                    ) : (
+                      <span className="workspace-focus-hint">click to focus</span>
+                    )}
+                    <button
+                      type="button"
+                      className="toggle-raw workspace-min-btn"
+                      onClick={(e) => {
+                        e.stopPropagation(); // minimize without stealing focus
+                        toggleMinimized(id);
+                      }}
+                      title={minimized[id] ? `Expand the ${title} panel` : `Minimize the ${title} panel to its header`}
+                    >
+                      {minimized[id] ? "Expand" : "Minimize"}
+                    </button>
+                  </span>
+                </header>
+                {!minimized[id] && (
+                  <div className="workspace-body">
+                    {id === "afe" && (
+                      <SpecForm
+                        onSubmit={handleSubmit}
+                        submitting={researching || submitting}
+                        onArchChange={handleArchChange}
+                        blockStates={blockStates}
+                        settings={settings}
+                        archVersion={archVersion}
+                        phyType={phyType}
+                      />
+                    )}
+                    {id === "interface" && (
+                      <InterfaceEditor phyType={archView.phy_type} version={ifVersion} />
+                    )}
+                    {id === "digital" && (
+                      <DigitalArchPanel
+                        phyType={archView.phy_type}
+                        version={digVersion}
+                        onRtlSubmit={handleRtlSubmit}
+                        rtlSubmitting={submitting}
+                      />
+                    )}
+                    {id === "firmware" && (
+                      <FirmwarePanel phyType={archView.phy_type} version={fwVersion} />
+                    )}
+                  </div>
+                )}
+              </section>
+            ))}
           </div>
-          {archView.topology && (
-            <div className="panel schematic-panel-slot">
-              <SchematicPanel
-                topology={archView.topology}
-                topologyLabel={archView.topology_label}
-                blockId={archView.selected_block}
-              />
-            </div>
-          )}
+          {/* Right column: the context-switching consultant chat on top, and
+              (user request) the schematic sub-window kept UNDERNEATH it - it
+              still follows whatever block/topology is highlighted in the
+              form. */}
+          <div className="drawing-side">
+            <ArchChatSidebar
+              phyType={archView.phy_type}
+              workspace={focusedWorkspace}
+              onArchEdited={handleArchEdited}
+              onInterfaceEdited={bumpInterface}
+              onSaved={refreshCustomArchs}
+            />
+            {archView.topology && (
+              <div className="panel schematic-panel-slot">
+                <SchematicPanel
+                  topology={archView.topology}
+                  topologyLabel={archView.topology_label}
+                  blockId={archView.selected_block}
+                />
+              </div>
+            )}
+          </div>
         </div>
 
         {error && <div className="error-box">{error}</div>}

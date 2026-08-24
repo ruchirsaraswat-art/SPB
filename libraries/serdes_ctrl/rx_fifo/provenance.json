@@ -1,0 +1,12 @@
+{
+  "run_id": "20df115378b5",
+  "deliverable": "rtl",
+  "topology": "elastic_fifo",
+  "label": "Elastic FIFO (CDC to Core Clock)",
+  "filed_at": "2026-08-24T02:08:22.648818+00:00",
+  "views": [
+    "rx_fifo.v",
+    "rx_fifo_tb.sv",
+    "rx_fifo_sim.log"
+  ]
+}

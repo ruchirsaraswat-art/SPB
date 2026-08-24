@@ -1,83 +1,135 @@
+// -----------------------------------------------------------------------------
+// Block:        nmos_current_mirror_rnm_tb
+// Description:  Self-checking testbench for nmos_current_mirror_rnm (RNM)
+// Author:       Circuit_Builder (for ruchir.saraswat@gmail.com)
+// Date:         2026-08-21
+// Abstraction:  RNM testbench (real-valued stimulus, plain real ports)
+//
+// Parameter <-> spec-field mapping (checks performed)
 // ---------------------------------------------------------------------------
-// nmos_current_mirror_rnm_tb.sv
-// Self-checking TB for nmos_current_mirror_rnm (RNM, real-valued ports).
-// Date: 2026-08-20.  Run: cycle3 calibration 10uA 1:2 mirror.
-// Checks (target = 22.1166 uA = SPICE-achieved Iout, vcompliance = 0.9 V):
-//   1. DC sweep vout 0..1.8 V: iout within 5 percent of target for all
-//      vout at or above vcompliance
-//   2. iout below 80 percent of target at vout = vcompliance/3 = 0.3 V
-//      (compliance rolloff exists)
-//   3. ratio iout/iref at vout = 0.9 V within 1 percent of 2.21166
-// Settling tau: not applicable - static block, no dynamics in this run
-// (documented per RNM rules; nothing to derive from a load cap here).
-// Prints exactly one of RNM_TB_PASS or RNM_TB_FAIL plus a reason.
-// Global watchdog: 2,000,000 ps (about 20x the expected 90,000 ps run).
-// Verification status: generated_unverified - iverilog not installed here.
-// ---------------------------------------------------------------------------
-
+//   Check                          Spec field         Target        Tolerance
+//   nominal iout @ vout=VGS_REF    iout (20.0 uA)     20.0e-6 A     +/-0.5%
+//   mirror ratio iout/iref         ratio 2.0:1.0      2.0           +/-0.5%
+//   output resistance              judgment 500 kOhm  500e3 Ohm     +/-5%
+//   ratio tempco (27C -> 127C)     judgment 100ppm/C  100 ppm/C     within 2x
+//   compliance rolloff @ 0.1 V     judgment Vdsat=0.2 iout < 60% of sat value
+//   1%-settling at 5*tau           derived tau=500ps  |err| < 1% of step
+//   ~63% point at 1*tau            derived tau=500ps  remaining frac 0.2..0.5
+//     (the 1*tau check catches ps/seconds exponent mixups: an all-pass model
+//      settles instantly, a frozen model never moves - both fail this window)
+//
+// NOT modeled/checked: sub-1% absolute accuracy, corners, noise, mismatch.
+// Verification status: VERIFIED (prints RNM_TB_PASS; see rnm_sim.log)
+// Watchdog: 1,000,000 ps ~ 20x expected ~50 ns test duration.
+// -----------------------------------------------------------------------------
 `timescale 1ps/1fs
 
 module nmos_current_mirror_rnm_tb;
 
-  localparam real TARGET_UA = 22.1166;
-  localparam real VCOMP_V   = 0.9;
-  localparam real RATIO_EXP = 2.21166;
-  localparam integer WATCHDOG_PS = 2000000;
+  // spec / judgment constants (mirror the DUT defaults)
+  localparam real IREF_A    = 10.0e-6;
+  localparam real RATIO     = 2.0;
+  localparam real ROUT_OHM  = 500.0e3;
+  localparam real VGS_REF_V = 0.65;
+  localparam real TC_PPM_C  = 100.0;
+  localparam real TAU_PS    = 500.0;   // derived in DUT header: Cg/gm = 500 ps
+  localparam real SETTLE_PS = 5000.0;  // 10*tau: "fully settled" wait
 
-  real iref;
-  real vout;
+  real iref, vout, temp;
   real iout;
-  real err;
-  real worst_err;
-  real ratio_meas;
-  integer i;
-  integer fails;
+  integer nfail;
+
+  // measurement temporaries
+  real i_nom, i_hi, rout_meas, i_hot, tc_meas, i_compl;
+  real i0, i1, i5, ifin, frac1, frac5;
 
   nmos_current_mirror_rnm dut (
-    .iref_ua (iref),
-    .vout_v  (vout),
-    .iout_ua (iout)
+    .iref_a (iref),
+    .vout_v (vout),
+    .temp_c (temp),
+    .iout_a (iout)
   );
 
-  // global watchdog - a silent hang is never acceptable
-  initial begin #WATCHDOG_PS; $display("RNM_TB_FAIL watchdog timeout"); $finish; end
-
+  // global watchdog: a hang must fail loudly, never stall vvp
   initial begin
-    fails = 0;
-    worst_err = 0.0;
-    iref = 10.0;
-    vout = 0.0; #100;
+    #1000000;
+    $display("RNM_TB_FAIL watchdog timeout");
+    $finish;
+  end
 
-    // check 1: flatness at and above compliance (10 mV steps, 0 to 1.8 V)
-    for (i = 0; i <= 180; i = i + 1) begin
-      vout = 0.01 * i; #100;
-      if (vout >= VCOMP_V - 1.0e-9) begin
-        err = (iout - TARGET_UA) / TARGET_UA;
-        if (err < 0.0) err = -err;
-        if (err > worst_err) worst_err = err;
-        if (err > 0.05) fails = fails + 1;
+  task check(input string name, input real meas, input real lo, input real hi);
+    begin
+      if (meas >= lo && meas <= hi)
+        $display("  ok   %s = %g  (window %g .. %g)", name, meas, lo, hi);
+      else begin
+        $display("  FAIL %s = %g  outside window %g .. %g", name, meas, lo, hi);
+        nfail = nfail + 1;
       end
     end
-    $display("RNM_INFO worst flatness error above compliance = %g", worst_err);
+  endtask
 
-    // check 2: rolloff at vcompliance/3
-    vout = VCOMP_V / 3.0; #100;
-    $display("RNM_INFO iout at vc/3 = %g uA (target %g uA)", iout, TARGET_UA);
-    if (iout >= 0.8 * TARGET_UA) begin
-      fails = fails + 1;
-      $display("RNM_INFO rolloff check failed - always-on source?");
-    end
+  initial begin
+    nfail = 0;
+    iref  = IREF_A;
+    temp  = 27.0;
+    vout  = VGS_REF_V;   // vds(out) = vds(ref): ratio point, no rout term
 
-    // check 3: mirror ratio at vout = vcompliance
-    vout = VCOMP_V; #100;
-    ratio_meas = iout / iref;
-    $display("RNM_INFO ratio at vout=0.9V = %g (expected %g)", ratio_meas, RATIO_EXP);
-    err = (ratio_meas - RATIO_EXP) / RATIO_EXP;
-    if (err < 0.0) err = -err;
-    if (err > 0.01) fails = fails + 1;
+    // --- 1) nominal output current and mirror ratio ---
+    #(SETTLE_PS);
+    i_nom = iout;
+    check("iout_nominal_A", i_nom, 20.0e-6*0.995, 20.0e-6*1.005);
+    check("mirror_ratio",   i_nom/iref, RATIO*0.995, RATIO*1.005);
+    $display("MEAS iout_ua=%0.6f", i_nom*1.0e6);
+    $display("MEAS ratio=%0.6f",   i_nom/iref);
 
-    if (fails == 0) $display("RNM_TB_PASS");
-    else $display("RNM_TB_FAIL %0d check(s) failed", fails);
+    // --- 2) output resistance: delta-V / delta-I between 0.65 V and 1.65 V ---
+    vout = VGS_REF_V + 1.0;
+    #(SETTLE_PS);
+    i_hi = iout;
+    rout_meas = 1.0 / (i_hi - i_nom);
+    check("rout_ohm", rout_meas, ROUT_OHM*0.95, ROUT_OHM*1.05);
+    $display("MEAS rout_kohm=%0.3f", rout_meas/1.0e3);
+
+    // --- 3) tempco: 27C -> 127C at the ratio point, within 2x of judgment ---
+    vout = VGS_REF_V;
+    temp = 127.0;
+    #(SETTLE_PS);
+    i_hot   = iout;
+    tc_meas = ((i_hot/i_nom) - 1.0) / (127.0 - 27.0) * 1.0e6;  // ppm/C
+    check("tempco_ppm_c", tc_meas, TC_PPM_C/2.0, TC_PPM_C*2.0);
+    $display("MEAS tempco_ppm_c=%0.3f", tc_meas);
+    temp = 27.0;
+
+    // --- 4) compliance: vout = 0.1 V (< Vdsat = 0.2 V) rolls the current off ---
+    vout = 0.1;
+    #(SETTLE_PS);
+    i_compl = iout;
+    check("compliance_iout_A", i_compl, 1.0e-9, 0.60*i_nom);
+    $display("MEAS iout_compliance_ua=%0.6f", i_compl*1.0e6);
+
+    // --- 5) settling: step vout 0.65 -> 1.65, one-pole with tau = 500 ps ---
+    vout = VGS_REF_V;
+    #(SETTLE_PS);
+    i0   = iout;                 // pre-step settled value
+    vout = VGS_REF_V + 1.0;      // step
+    #(TAU_PS);
+    i1 = iout;                   // at 1*tau: expect ~63% settled
+    #(4.0*TAU_PS);
+    i5 = iout;                   // at 5*tau: expect within 1%
+    #(5.0*TAU_PS);
+    ifin = iout;                 // fully settled reference
+    frac1 = (ifin - i1) / (ifin - i0);   // remaining fraction at 1*tau (~0.368)
+    frac5 = (ifin - i5) / (ifin - i0);   // remaining fraction at 5*tau (<0.01)
+    check("settle_remaining_at_1tau", frac1, 0.20, 0.50);
+    check("settle_remaining_at_5tau_pct", frac5*100.0, -1.0, 1.0);
+    $display("MEAS settle_frac_1tau=%0.4f settle_frac_5tau_pct=%0.4f",
+             frac1, frac5*100.0);
+
+    // --- verdict: exactly one machine-greppable token ---
+    if (nfail == 0)
+      $display("RNM_TB_PASS");
+    else
+      $display("RNM_TB_FAIL %0d check(s) failed", nfail);
     $finish;
   end
 

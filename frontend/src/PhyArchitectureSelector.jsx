@@ -1,7 +1,7 @@
 import { PHY_DESCRIPTIONS, blocksForPhy } from "./phyArchitectures";
 import ArchitectureDiagram from "./ArchitectureDiagram";
 
-export default function PhyArchitectureSelector({ phy_type, selectedBlock, blockStates, topologyOptions, onSelect }) {
+export default function PhyArchitectureSelector({ phy_type, selectedBlock, blockStates, topologyOptions, onSelect, archVersion }) {
   if (!phy_type) return null;
   const blocks = blocksForPhy(phy_type);
 
@@ -19,6 +19,7 @@ export default function PhyArchitectureSelector({ phy_type, selectedBlock, block
           selectedBlock={selectedBlock}
           topologyOptions={topologyOptions}
           onSelectBlock={onSelect}
+          version={archVersion}
         />
       )}
     </div>

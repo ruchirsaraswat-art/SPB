@@ -95,7 +95,7 @@ export async function openSchematic(runId) {
   return body;
 }
 
-// Virtuoso-style design libraries (libraries/<lib>/<cell>/<views> on the
+// Hierarchical design libraries (libraries/<lib>/<cell>/<views> on the
 // backend, browsable from xschem via XSCHEM_LIBRARY_PATH).
 export async function listLibraries() {
   const res = await fetch(`${API_BASE}/api/libraries`);
@@ -215,6 +215,319 @@ export async function saveSettings(workingDir) {
   });
   if (!res.ok) {
     throw new Error(await apiErrorMessage(res, "Failed to save settings"));
+  }
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Architecture-discussion chat (drawing tab). Full endpoint/patch contract:
+// audits/2026-08-21-arch-chat-feature.md.
+
+// One chat turn with the architecture consultant. SYNCHRONOUS on the
+// backend: this promise resolves only when the consultant has answered
+// (typically 20-90 s) - the sidebar must show a pending state and disable
+// re-submit meanwhile. `architecture` is the diagram as currently displayed:
+// {blocks: [{id, label, topology, ...}], edges: [{from, to}]}.
+// Resolves to {session_id, reply, patch, patch_valid, patch_errors,
+// cost_usd, duration_ms}; `patch` is {ops: [...]} (ops may carry a
+// per-op `error` field when patch_valid is false) or null.
+// `view` (2026-08-23 digital-arch spec): "afe" (default) validates patch
+// topologies against the analog catalog; "digital" against the digital block
+// catalog and frames the consultant as a digital-microarchitecture chat -
+// `afeArchitecture` is then sent as READ-ONLY prompt context.
+export async function archChat({ sessionId, message, architecture, phyType, view, afeArchitecture }) {
+  const res = await fetch(`${API_BASE}/api/arch_chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      session_id: sessionId,
+      message,
+      architecture,
+      phy_type: phyType ?? null,
+      view: view ?? "afe",
+      afe_architecture: afeArchitecture ?? null,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Architecture chat failed"));
+  }
+  return res.json();
+}
+
+// Persisted transcript for a chat session ({session_id, created_at, turns:
+// [{role, content, patch?, ts}]}); an unknown id returns an empty
+// transcript - used to restore the sidebar history after a reload.
+export async function getArchChatTranscript(sessionId) {
+  const res = await fetch(`${API_BASE}/api/arch_chat/${encodeURIComponent(sessionId)}`);
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Failed to fetch chat transcript"));
+  }
+  return res.json();
+}
+
+// Save (or overwrite - same name = ordinary re-save) a named custom
+// architecture. Resolves to the stored entry
+// {name, label, phy_type, created_at, updated_at?, architecture}.
+export async function saveArchitecture({ name, architecture, phyType, label }) {
+  const res = await fetch(`${API_BASE}/api/architectures`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, architecture, phy_type: phyType ?? null, label: label ?? null }),
+  });
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Failed to save architecture"));
+  }
+  return res.json();
+}
+
+// User-saved custom architectures, newest first:
+// {architectures: [{name, label, phy_type, created_at, architecture}, ...]}.
+// Built-ins stay frontend-static in phyArchitectures.js - the selector UI
+// merges this list alongside PHY_ARCHITECTURES.
+export async function listArchitectures() {
+  const res = await fetch(`${API_BASE}/api/architectures`);
+  if (!res.ok) {
+    throw new Error(`Failed to list architectures: ${res.status}`);
+  }
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Digital block catalog + AFE<->digital interface workspace (2026-08-23
+// digital-arch spec). Contracts: backend/digital_blocks.py, interfaces.py,
+// if_chat.py.
+
+// Digital block catalog: {groups: [{group, options: [{value, label, fields,
+// models}]}], by_phy: {phyType: [block values]}} - same option shape as
+// /api/topologies, separate value namespace.
+export async function getDigitalBlocks() {
+  const res = await fetch(`${API_BASE}/api/digital_blocks`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch digital blocks: ${res.status}`);
+  }
+  return res.json();
+}
+
+// User-saved interface definitions, newest first:
+// {interfaces: [{name, label, phy_type, created_at, warnings, interface}]}.
+export async function listInterfaces() {
+  const res = await fetch(`${API_BASE}/api/interfaces`);
+  if (!res.ok) {
+    throw new Error(`Failed to list interfaces: ${res.status}`);
+  }
+  return res.json();
+}
+
+// Save (or overwrite - same name = ordinary re-save) a named interface
+// definition. Hard validation errors are a 422 (formatted by
+// apiErrorMessage); soft warnings come back in the entry's "warnings".
+export async function saveInterface({ name, interfaceDef, phyType, label }) {
+  const res = await fetch(`${API_BASE}/api/interfaces`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name,
+      interface: interfaceDef,
+      phy_type: phyType ?? null,
+      label: label ?? null,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Failed to save interface"));
+  }
+  return res.json();
+}
+
+// One interface-consultant turn. Same synchronous/slow semantics as
+// archChat; both architectures are READ-ONLY context. Resolves to
+// {session_id, reply, patch, patch_valid, patch_errors, interface_warnings,
+// cost_usd, duration_ms}; patch ops are the interface set (add_signal,
+// update_clock_domain, set_power_sequence, ...).
+export async function ifChat({ sessionId, message, interfaceDef, afeArchitecture, digitalArchitecture, phyType }) {
+  const res = await fetch(`${API_BASE}/api/if_chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      session_id: sessionId,
+      message,
+      interface: interfaceDef,
+      afe_architecture: afeArchitecture ?? null,
+      digital_architecture: digitalArchitecture ?? null,
+      phy_type: phyType ?? null,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Interface chat failed"));
+  }
+  return res.json();
+}
+
+// Persisted transcript for one interface-chat session (if_chats/ namespace,
+// separate from arch chats); unknown ids return an empty transcript.
+export async function getIfChatTranscript(sessionId) {
+  const res = await fetch(`${API_BASE}/api/if_chat/${encodeURIComponent(sessionId)}`);
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Failed to fetch interface chat transcript"));
+  }
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Firmware workspace (2026-08-23 firmware-section spec). Contracts:
+// backend/firmware_blocks.py, fw_chat.py, fw_generate.py.
+
+// Firmware block catalog: {groups, by_phy, note} - same option shape as
+// /api/digital_blocks but with deliberately NO "models" key on any option
+// (firmware is host-compiled C, verified by gcc + unit tests, not
+// behavioral-model levels - the "note" says so).
+export async function getFirmwareBlocks() {
+  const res = await fetch(`${API_BASE}/api/firmware_blocks`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch firmware blocks: ${res.status}`);
+  }
+  return res.json();
+}
+
+// One firmware-consultant turn (Firmware_Coder persona). Same
+// synchronous/slow semantics as archChat; the interface definition goes
+// along as READ-ONLY context (the patch can only touch the firmware
+// diagram). Resolves to {session_id, reply, patch, patch_valid,
+// patch_errors, patch_warnings, cost_usd, duration_ms}.
+export async function fwChat({ sessionId, message, firmwareArchitecture, interfaceDef, phyType }) {
+  const res = await fetch(`${API_BASE}/api/fw_chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      session_id: sessionId,
+      message,
+      firmware_architecture: firmwareArchitecture,
+      interface: interfaceDef ?? null,
+      phy_type: phyType ?? null,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Firmware chat failed"));
+  }
+  return res.json();
+}
+
+// Persisted transcript for one firmware-chat session (fw_chats/ namespace);
+// unknown ids return an empty transcript.
+export async function getFwChatTranscript(sessionId) {
+  const res = await fetch(`${API_BASE}/api/fw_chat/${encodeURIComponent(sessionId)}`);
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Failed to fetch firmware chat transcript"));
+  }
+  return res.json();
+}
+
+// The one v1 firmware codegen action: SYNCHRONOUS on the backend (a paid
+// Firmware_Coder run, typically minutes) - the caller must show a pending
+// state and disable re-submit meanwhile. Resolves to {status: "pass"|"fail",
+// run_id, reason, files, missing_files, compile_ok, tests_ok, test_output,
+// cost_usd, duration_s}; pass/fail is server-enforced (the backend re-runs
+// gcc -std=c99 -Wall -Werror + make test itself).
+export async function fwGenerate({ phyType, interfaceDef }) {
+  const res = await fetch(`${API_BASE}/api/fw_generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ phy_type: phyType, interface: interfaceDef }),
+  });
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Firmware generation failed"));
+  }
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Spec-document intake + RTL generation (2026-08-23 rtl-gen spec). Contracts:
+// backend/spec_docs.py, backend/rtl_generate.py.
+
+// All spec-doc metadata + per-PHY answer status:
+// {docs: [{id, title, standard_family, version, source, user_notes,
+// relevant_sections, applies_to_workspaces, phy_type, added_at}],
+// status: {phyType: {answer: "attached"|"no_spec"|null, answered_at}}}.
+export async function listSpecDocs(phyType) {
+  const q = phyType ? `?phy_type=${encodeURIComponent(phyType)}` : "";
+  const res = await fetch(`${API_BASE}/api/spec_docs${q}`);
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Failed to list spec docs"));
+  }
+  return res.json();
+}
+
+// Attach one spec doc. `metadata.source` is {type: "file", path: "<absolute
+// local path the backend copies in>"} | {type: "url", url} |
+// {type: "reference", citation}. Also records the per-PHY answer "attached"
+// (suppresses the intake banner).
+export async function createSpecDoc({ phyType, metadata }) {
+  const res = await fetch(`${API_BASE}/api/spec_docs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ phy_type: phyType, metadata }),
+  });
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Failed to attach spec doc"));
+  }
+  return res.json();
+}
+
+export async function updateSpecDoc({ phyType, docId, metadata }) {
+  const res = await fetch(
+    `${API_BASE}/api/spec_docs/${encodeURIComponent(phyType)}/${encodeURIComponent(docId)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ metadata }),
+    }
+  );
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Failed to update spec doc"));
+  }
+  return res.json();
+}
+
+export async function deleteSpecDoc({ phyType, docId }) {
+  const res = await fetch(
+    `${API_BASE}/api/spec_docs/${encodeURIComponent(phyType)}/${encodeURIComponent(docId)}`,
+    { method: "DELETE" }
+  );
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Failed to remove spec doc"));
+  }
+  return res.json();
+}
+
+// Set the per-PHY spec-doc answer ("no_spec" or "attached") - an explicit
+// choice means the intake banner never auto-asks again for this PHY.
+export async function setSpecDocAnswer({ phyType, answer }) {
+  const res = await fetch(
+    `${API_BASE}/api/spec_docs/${encodeURIComponent(phyType)}/answer`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ answer }),
+    }
+  );
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Failed to record spec-doc answer"));
+  }
+  return res.json();
+}
+
+// Kick off an RTL generation run (deliverable "rtl": scope "block" for one
+// designable diagram block, "controller" for every block + the stitched
+// top). Returns {run_id} immediately - poll GET /api/runs/{id} like every
+// other run; the verdict is server-enforced (backend re-runs iverilog+vvp
+// itself; controller runs may come back "partial").
+export async function rtlGenerate(request) {
+  const res = await fetch(`${API_BASE}/api/rtl_generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Failed to start RTL generation"));
   }
   return res.json();
 }

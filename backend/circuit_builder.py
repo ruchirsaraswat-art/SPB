@@ -47,6 +47,7 @@ import json
 import os
 import re
 import select
+import shutil
 import subprocess
 import threading
 import time
@@ -55,9 +56,17 @@ from pathlib import Path
 from typing import Any, Callable
 
 from models_contract import (
+    MODEL_LABELS,
+    MODEL_TYPES,
+    RNM_RULES,
+    VERILOG_RULES,
     augmented_path,
     build_models_prompt_section,
     check_models_in_summary,
+    model_guidance,
+    normalize_arch_blocks,
+    toolchain_status,
+    validate_arch_model_request,
 )
 from topologies import extra_fields_target_dict, format_extra_field_lines, topology_display_name
 
@@ -140,6 +149,31 @@ def disallowed_tools() -> list[str]:
 DEFAULT_TIMEOUT_S = 2400  # a real netlist+sim+render run (incl. testbench debugging) can take 15-30+ minutes
 POLL_INTERVAL_S = 1.0  # how often the read loop checks cancel/timeout when no output is ready
 
+# Single-deliverable run modes (RunSpec.deliverable). "full" = the original
+# design+simulate(+models) flow, unchanged. The others produce ONLY the named
+# deliverable; symbol/model-only runs skip transistor-level design entirely
+# and are much cheaper/faster, which the timeouts (and the run-record
+# metadata main.py stores) reflect.
+DELIVERABLES = ("full", "schematic_only", "symbol", *MODEL_TYPES, "arch_model", "arch_stitch")
+# Which modes are cheap/fast (no SPICE verification suite, no schematic
+# drawing/rendering) - surfaced to the UI as a "light run" label. arch_model
+# is model-only too but spans many blocks, so it is not labeled light.
+LIGHT_DELIVERABLES = ("symbol", *MODEL_TYPES)
+_DELIVERABLE_TIMEOUTS_S = {
+    "full": DEFAULT_TIMEOUT_S,
+    "schematic_only": 1800,  # design+draw+render+DC sanity, no verification suite
+    "symbol": 600,           # one .sym plus a netlist smoke check
+    "veriloga": 1200,        # author + openvaf compile + ngspice self-check TB
+    "verilog": 1200,
+    "rnm": 1200,
+    "arch_model": 1800,      # one model per included block + wired top + TB
+    "arch_stitch": 1200,     # one top-level .sch instantiating filed symbols + netlist + PNG
+}
+
+
+def timeout_for(deliverable: str | None) -> int:
+    return _DELIVERABLE_TIMEOUTS_S.get(deliverable or "full", DEFAULT_TIMEOUT_S)
+
 
 @dataclass
 class CircuitBuilderResult:
@@ -154,7 +188,7 @@ class CircuitBuilderResult:
 
 
 def _write_project_xschemrc(run_dir: Path) -> None:
-    # Also put the tool's Virtuoso-style design-library trees (libraries/
+    # Also put the tool's hierarchical design-library trees (libraries/
     # <library>/<cell>/<views> - see backend/libraries.py) on
     # XSCHEM_LIBRARY_PATH: xschem "libraries" are just directories on that
     # path, so cells filed by previous runs are browsable and their symbols
@@ -170,7 +204,7 @@ def _write_project_xschemrc(run_dir: Path) -> None:
         "# Project-local xschemrc: pull in the sky130 PDK xschem libraries.\n"
         "if {![info exists env(PDK_ROOT)]} { set env(PDK_ROOT) $env(HOME)/.volare }\n"
         "source $env(PDK_ROOT)/sky130A/libs.tech/xschem/xschemrc\n"
-        "# SPB design libraries (Virtuoso-style lib/cell/view directory tree).\n"
+        "# SPB design libraries (hierarchical lib/cell/view directory tree).\n"
         + lib_lines
     )
 
@@ -189,6 +223,23 @@ def build_prompt(spec: dict[str, Any]) -> str:
     the internal structure of a PLL, CDR, DFE, etc.
     """
     topology = spec.get("topology", "nmos_current_mirror")
+
+    # Single-deliverable modes (RunSpec.deliverable): each produces ONLY the
+    # named deliverable instead of the full design+simulate+models flow.
+    # "full" (or absent - every pre-feature spec) falls through to the
+    # original prompts below, unchanged.
+    deliverable = spec.get("deliverable") or "full"
+    if deliverable == "schematic_only":
+        return _build_schematic_only_prompt(spec)
+    if deliverable == "symbol":
+        return _build_symbol_prompt(spec)
+    if deliverable in MODEL_TYPES:
+        return _build_model_only_prompt(spec, deliverable)
+    if deliverable == "arch_model":
+        return _build_arch_model_prompt(spec)
+    if deliverable == "arch_stitch":
+        return _build_arch_stitch_prompt(spec)
+
     if topology == "nmos_current_mirror":
         prompt = _build_current_mirror_prompt(spec)
     else:
@@ -422,6 +473,18 @@ def _testbench_step(tb_base: str, style: str, what_to_verify: str) -> str:
    corner, and sets up the analysis. {what_to_verify}"""
 
 
+def _cell_naming_note(spec: dict[str, Any]) -> str:
+    """When the user targeted an existing library cell, the schematic's base
+    name must match it so the run's views land as views OF that cell."""
+    cell = spec.get("cell")
+    if not cell:
+        return ""
+    return (
+        f" Name the schematic exactly `{cell}.sch` - the user chose to file this "
+        f"run into the existing library cell `{cell}`, so the base name must match."
+    )
+
+
 def _spec_line(label: str, value: Any, unit: str = "") -> str:
     if value is None or value == "":
         return f"- {label}: not specified - use your own engineering judgment"
@@ -543,7 +606,7 @@ corner in any testbench `.lib` include.
    briefly (per your usual practice) - including any assumption you made for
    a spec value left unspecified above.
 2. Hand-write the xschem schematic (a `.sch` file) per your standard
-   authoring workflow, with clearly labeled input/output/supply pins.
+   authoring workflow, with clearly labeled input/output/supply pins.{_cell_naming_note(spec)}
 3. Netlist it headlessly (`xschem -x -q -n -s <name>.sch`) and check the
    resulting connectivity before moving on.
 4. Render the schematic to a PNG in this directory via the standard Xvfb
@@ -598,6 +661,577 @@ corner in any testbench `.lib` include.
 
 After writing summary.json, give a brief (3-5 sentence) plain-English
 summary of what you built and measured as your final reply.
+"""
+
+
+# ---------------------------------------------------------------------------
+# Single-deliverable prompts (RunSpec.deliverable != "full"). Each is a
+# self-contained prompt for exactly one output; the full-flow prompts above
+# are deliberately untouched.
+# ---------------------------------------------------------------------------
+
+
+def _spec_context_block(spec: dict[str, Any]) -> str:
+    """The spec-values section shared by the single-deliverable prompts:
+    the current mirror's fixed sizing fields, or the schema-driven
+    extra-fields lines every other topology uses (same formatting helpers as
+    the full prompts, so the two can't drift)."""
+    topology = spec.get("topology", "nmos_current_mirror")
+    vdd_v = spec["vdd_v"]
+    corner = spec["corner"]
+    temp_c = spec.get("temp_c", 27)
+    if topology == "nmos_current_mirror":
+        iref_ua = spec["iref_ua"]
+        ratio_out = spec["ratio_out"]
+        ratio_ref = spec["ratio_ref"]
+        lines = [
+            f"- Reference current Iref = {iref_ua} uA",
+            f"- Mirror ratio (output:reference) = {ratio_out}:{ratio_ref}",
+            f"- Target output current = {round(iref_ua * ratio_out / ratio_ref, 4)} uA",
+            f"- Reference device sizing: W = {spec['w_ref_um']} um, L = {spec['l_ref_um']} um "
+            f"(mirror device W scales by the ratio, same L)",
+        ]
+    else:
+        lines = format_extra_field_lines(topology, spec.get("extra_fields")) or [
+            "- (no structured spec fields defined for this topology - see any notes below)"
+        ]
+        lines.append(_spec_line("Power budget", spec.get("power_mw"), "mW"))
+        lines.append(_spec_line("Area budget", spec.get("area_um2"), "um^2"))
+        lines.append(_spec_line("Additional notes from the user", spec.get("notes")))
+    lines.append(_spec_line("Supply voltage VDD", vdd_v, "V"))
+    lines.append(_spec_line("Simulation temperature", temp_c, "C"))
+    lines.append(_spec_line("Process corner", corner, "(sky130 tt/ff/ss/sf/fs)"))
+    return "\n".join(lines)
+
+
+def _chosen_architecture_clause(spec: dict[str, Any]) -> str:
+    chosen = spec.get("chosen_architecture")
+    if not chosen:
+        return ""
+    rationale = spec.get("chosen_architecture_rationale")
+    rationale_clause = f" Circuit_Researcher's rationale: {rationale}" if rationale else ""
+    return (
+        f"\nArchitecture already chosen by the user (from a Circuit_Researcher "
+        f"comparison): **{chosen}**.{rationale_clause} Build this specific "
+        "architecture unless it is clearly infeasible in sky130 at this supply "
+        "- if so, say why and pick the closest viable alternative.\n"
+    )
+
+
+def _build_schematic_only_prompt(spec: dict[str, Any]) -> str:
+    """Deliverable = schematic_only: design the circuit and produce netlist +
+    xschem .sch + rendered PNG. NO verification simulation suite (a quick DC
+    operating-point sanity check is allowed), no behavioral models."""
+    topology = spec.get("topology", "nmos_current_mirror")
+    display_name = topology_display_name(topology, spec.get("custom_topology"))
+    label = spec.get("label") or "unlabeled run"
+    corner = spec["corner"]
+    vdd_v = spec["vdd_v"]
+    temp_c = spec.get("temp_c", 27)
+
+    if topology == "nmos_current_mirror" and not spec.get("chosen_architecture"):
+        topology_note = (
+            "Standard two-transistor NMOS current mirror: diode-connected M1 "
+            "carrying Iref from an ideal current source pulled up to VDD, M2 "
+            "mirroring to an output pin IOUT, both `sky130_fd_pr__nfet_01v8`, "
+            "bulk to GND. Derive M2's W by scaling M1's W by the mirror ratio "
+            "(same L)."
+        )
+    else:
+        topology_note = (
+            "Use your own domain expertise to choose a sky130-appropriate "
+            "internal topology/sizing that can plausibly meet the spec below, "
+            "and briefly state and justify that choice before drawing."
+        )
+
+    return f"""Design and DRAW a {display_name} in sky130 in the CURRENT WORKING
+DIRECTORY ONLY. Do not touch any files outside this directory. A
+project-local `xschemrc` already exists here sourcing the PDK; use it as-is.
+
+Run label: {label}
+
+SCOPE - SCHEMATIC-ONLY RUN: this run's deliverables are the xschem schematic,
+its netlist, and a rendered PNG. Do NOT build the verification simulation
+suite (no AC/tran spec-verification testbenches, no spec-metric
+measurements) and do NOT write any behavioral models. The only simulation
+allowed is one quick DC operating-point sanity check of the bias points.
+
+## What to build
+{topology_note}
+{_chosen_architecture_clause(spec)}
+## Spec to design against (use these exact values where given; where a value
+## says "not specified", use your own engineering judgment and state it)
+{_spec_context_block(spec)}
+{_vdd_headroom_note(vdd_v)}
+## What to actually do (all in this directory)
+1. Briefly state the topology and sizing/biasing choices you're making.
+2. Hand-write the xschem schematic (a `.sch` file) per your standard
+   authoring workflow, with clearly labeled input/output/supply pins.{_cell_naming_note(spec)}
+3. Netlist it headlessly (`xschem -x -q -n -s <name>.sch`) and check the
+   resulting connectivity before moving on.
+4. Render the schematic to a PNG in this directory via the standard Xvfb
+   workflow (hide layers 15/17), then Read the PNG and visually sanity-check
+   it (no overlapping text, junction dots where nets join, pins labeled) -
+   fix and re-render if not.
+5. Quick DC sanity check ONLY (skip if a DC operating point is not
+   meaningful for this block, and say so): a minimal hand-written `.op`
+   testbench at VDD = {vdd_v} V, corner `{corner}`, `.temp {temp_c}`, run in
+   ngspice batch mode just to confirm the bias points are sane (devices in
+   the intended regions, no floating nodes). Save its output to
+   `dc_sanity.log`. Do not iterate on spec performance - that is the full
+   flow's job, not this run's.
+6. As the LAST thing you do, write a file named exactly `summary.json` in
+   this directory (via the Write tool) containing ONLY a single JSON object
+   with exactly these keys:
+   {{
+     "status": "success" or "failed",
+     "error": "" or a short plain-English reason if status is "failed",
+     "deliverable": "schematic_only",
+     "topology": "{display_name}",
+     "topology_choice": "<the internal topology you chose and why, one sentence>",
+     "corner": "{corner}",
+     "vdd_v": {vdd_v},
+     "temp_c": {temp_c},
+     "schematic_png": "<the PNG filename you actually wrote>",
+     "schematic_file": "<the .sch filename you actually wrote>",
+     "netlist_file": "<the netlisted .spice filename you actually wrote>",
+     "dc_log_file": "dc_sanity.log" or null if you skipped the DC check,
+     "dc_check_note": "<one sentence: what the DC sanity check showed, or why skipped>",
+     "notes": "<any caveats or assumptions>"
+   }}
+   Write this file even if something failed along the way (status "failed",
+   fill in "error", null what you don't have). Its "status" must honestly
+   reflect whether a usable schematic + netlist + PNG exist.
+
+After writing summary.json, give a brief (2-4 sentence) plain-English
+summary of what you drew as your final reply.
+"""
+
+
+def _build_symbol_prompt(spec: dict[str, Any]) -> str:
+    """Deliverable = symbol: ONLY an xschem .sym for the block. Cheap, no
+    simulations. When run_circuit_builder found a filed library schematic for
+    this block it copied it into the run dir and recorded its filename in
+    spec['_symbol_source_sch'] (and the cell name in spec['_symbol_cell']);
+    the pins come from there. Otherwise the pin list is derived from the
+    block's spec/standard interface."""
+    topology = spec.get("topology", "nmos_current_mirror")
+    display_name = topology_display_name(topology, spec.get("custom_topology"))
+    label = spec.get("label") or "unlabeled run"
+    cell = spec.get("_symbol_cell") or topology
+    source_sch = spec.get("_symbol_source_sch")
+
+    if source_sch:
+        pin_source = f"""## Pin source: the filed schematic
+The block's filed library schematic has been copied into this directory as
+`{source_sch}`. Read it and derive the symbol's pins EXACTLY from its
+top-level I/O pins (`ipin`/`opin`/`iopin` instances and their lab= names) -
+the symbol must be electrically consistent with that schematic so xschem can
+descend from symbol to schematic. Do not invent extra pins."""
+    else:
+        pin_source = f"""## Pin source: the spec (no filed schematic exists for this block yet)
+There is no filed schematic to read pins from. Derive a sensible, standard
+pin list for a {display_name} from the spec below (signal ins/outs, clocks
+or control words where the block type needs them, plus VDD/GND supply pins),
+and record the list you chose in summary.json's "ports".
+
+## Spec context
+{_spec_context_block(spec)}"""
+
+    return f"""Create an xschem SYMBOL for a {display_name} in the CURRENT WORKING
+DIRECTORY ONLY. Do not touch any files outside this directory. A
+project-local `xschemrc` already exists here sourcing the PDK; use it as-is.
+
+Run label: {label}
+
+SCOPE - SYMBOL-ONLY RUN: the single deliverable is `{cell}.sym` (use exactly
+that filename). No schematic drawing, no netlisting of a circuit, no SPICE
+simulation, no behavioral models.
+
+{pin_source}
+
+## What to actually do (all in this directory)
+1. Hand-write `{cell}.sym` per your standard xschem symbol-authoring
+   workflow: a clean box outline, pin attributes (`type=...`,
+   `format="@name"` style template as appropriate), pins on the standard
+   grid with correct `dir=in/out/inout`, pin name labels, and the cell name
+   as the symbol's visible label.
+2. Verify it cheaply: write a tiny wrapper schematic `symbol_check.sch` that
+   instantiates `{cell}.sym` with named nets on every pin, netlist it
+   headlessly (`xschem -x -q -n -s symbol_check.sch`), and confirm every pin
+   appears in the netlist with the right name/order. Fix the symbol and
+   re-check if not.
+3. As the LAST thing you do, write a file named exactly `summary.json` in
+   this directory (via the Write tool) containing ONLY a single JSON object
+   with exactly these keys:
+   {{
+     "status": "success" or "failed",
+     "error": "" or a short plain-English reason if status is "failed",
+     "deliverable": "symbol",
+     "topology": "{display_name}",
+     "cell": "{cell}",
+     "symbol_file": "{cell}.sym",
+     "ports": ["<every pin name, in pin order>"],
+     "port_source": {"\"filed_schematic\"" if source_sch else "\"spec_derived\""},
+     "notes": "<any caveats, e.g. an ambiguous pin you had to judge>"
+   }}
+   Write this file even if something failed (status "failed", fill "error").
+
+After writing summary.json, give a brief (1-3 sentence) plain-English
+summary as your final reply.
+"""
+
+
+def _build_model_only_prompt(spec: dict[str, Any], model_type: str) -> str:
+    """Deliverable = veriloga|verilog|rnm: generate JUST that behavioral
+    model from the spec - no transistor-level design, no schematic. The
+    per-type contract text (deliverable filenames, coding restrictions,
+    verification commands, pass tokens, honesty rules) is the SAME
+    models_contract section the full flow uses, in standalone framing."""
+    topology = spec.get("topology", "nmos_current_mirror")
+    display_name = topology_display_name(topology, spec.get("custom_topology"))
+    label = spec.get("label") or "unlabeled run"
+    corner = spec["corner"]
+    vdd_v = spec["vdd_v"]
+    temp_c = spec.get("temp_c", 27)
+    target_spec_obj = extra_fields_target_dict(topology, spec.get("extra_fields"))
+    if topology == "nmos_current_mirror":
+        target_spec_obj = {
+            "iref_ua": spec.get("iref_ua"),
+            "ratio_out": spec.get("ratio_out"),
+            "ratio_ref": spec.get("ratio_ref"),
+        }
+    target_spec_json = _json_literal(target_spec_obj)
+
+    header = f"""Author and verify ONE behavioral model - {MODEL_LABELS[model_type]} -
+of a {display_name}, in the CURRENT WORKING DIRECTORY ONLY. Do not touch any
+files outside this directory.
+
+Run label: {label}
+
+SCOPE - MODEL-ONLY RUN: this run has NO transistor-level design step. Do not
+draw a schematic, do not write a circuit netlist, do not size any
+transistors. The only deliverables are the model files, self-checking
+testbench, and verification log described below.
+
+## Spec the model must represent (use these exact values where given; where
+## a value says "not specified", pick a defensible judgment value and
+## document it in the model header and summary notes)
+{_spec_context_block(spec)}
+"""
+
+    models_section = build_models_prompt_section(topology, [model_type], standalone=True)
+
+    closing = f"""
+## summary.json (the LAST file you write, via the Write tool)
+A single JSON object (no markdown fence, no extra text in the file) with
+exactly these keys:
+   {{
+     "status": "success" or "failed",
+     "error": "" or a short plain-English reason if status is "failed",
+     "deliverable": "{model_type}",
+     "topology": "{display_name}",
+     "corner": "{corner}",
+     "vdd_v": {vdd_v},
+     "temp_c": {temp_c},
+     "target_spec": {target_spec_json},
+     "notes": "<assumptions made for unspecified spec fields, caveats>"
+   }}
+   PLUS the "models" key exactly as described in the model section above
+   (containing only "{model_type}"). Top-level "status" is "success" only if
+   the model was generated AND its verification outcome is honest -
+   "verified" claims are cross-checked against the pass token in the sim log
+   by another program. A model whose testbench failed means status "failed".
+   Write this file even if something failed along the way.
+
+After writing summary.json, give a brief (2-4 sentence) plain-English
+summary including the verification outcome as your final reply.
+"""
+    return header + models_section + closing
+
+
+ARCH_PASS_TOKEN = "ARCH_TB_PASS"
+ARCH_FAIL_TOKEN = "ARCH_TB_FAIL"
+
+
+def _safe_verilog_id(raw: str) -> str:
+    """Block/diagram ids may contain '-' etc.; Verilog identifiers may not."""
+    safe = re.sub(r"[^A-Za-z0-9_]", "_", raw or "blk")
+    return safe if re.match(r"[A-Za-z_]", safe) else f"b_{safe}"
+
+
+def arch_deliverable_files(spec: dict[str, Any]) -> dict[str, Any]:
+    """Fixed filenames for an arch_model run: one model file per included
+    designable block, a top-level wiring module, its self-checking testbench,
+    and the verification log. Shared by the prompt builder, evaluate_summary
+    and the tests so the contract cannot drift."""
+    model_type = spec.get("arch_model_type") or "rnm"
+    included = validate_arch_model_request(
+        spec.get("architecture"), spec.get("arch_blocks"), model_type
+    )
+    # Top-module (and library cell) name: the PHY type for a whole-diagram
+    # model, the block ids for a small subset - otherwise every subset model
+    # of the same PHY files into the SAME cell and silently overwrites the
+    # previous one (seen in the first real user-driven runs: a tx-ffe-only
+    # and an rx-eq-only model both landing as "ser_des_arch").
+    if spec.get("arch_blocks") and len(included) <= 2:
+        top = "_".join(_safe_verilog_id(b["id"]) for b in included) + "_arch"
+    else:
+        top = _safe_verilog_id(spec.get("phy_type") or "phy") + "_arch"
+    sfx = "_rnm.sv" if model_type == "rnm" else ".v"
+    return {
+        "top": top,
+        "model_type": model_type,
+        "included": included,
+        "block_files": {b["id"]: f"{_safe_verilog_id(b['id'])}{sfx}" for b in included},
+        "top_file": f"{top}{sfx}",
+        "testbench_file": f"{top}_tb{'.sv' if model_type == 'rnm' else '.v'}",
+        "sim_log_file": "arch_sim.log",
+    }
+
+
+def _build_arch_model_prompt(spec: dict[str, Any]) -> str:
+    """Deliverable = arch_model: ONE composite behavioral model of the block
+    diagram (or the user-chosen subset): a model module per included block
+    plus a top-level module wiring them per the diagram edges, verified by a
+    self-checking end-to-end testbench. No transistor-level design."""
+    files = arch_deliverable_files(spec)
+    model_type = files["model_type"]
+    included = files["included"]
+    included_ids = {b["id"] for b in included}
+    top = files["top"]
+    label = spec.get("label") or "unlabeled run"
+    phy_type = spec.get("phy_type") or "phy"
+    arch = spec.get("architecture") or {}
+    edges = arch.get("edges") or arch.get("connections") or []
+    level_label = "RNM (SystemVerilog, real-valued ports)" if model_type == "rnm" else "digital Verilog (event-driven, bit-level)"
+    rules = RNM_RULES if model_type == "rnm" else VERILOG_RULES
+
+    block_lines = []
+    for b in included:
+        guidance = model_guidance(b.get("topology") or "custom", model_type)
+        block_lines.append(
+            f"- `{b['id']}` ({b.get('label') or b['id']}; topology: {b.get('topology')}), "
+            f"model file `{files['block_files'][b['id']]}`, module `{_safe_verilog_id(b['id'])}"
+            f"{'_rnm' if model_type == 'rnm' else ''}`.\n"
+            f"  What this block's model must capture: {guidance}"
+        )
+    skipped = [
+        f"`{b.get('id')}`" for b in (arch.get("blocks") or [])
+        if isinstance(b, dict) and b.get("id") and b["id"] not in included_ids
+    ]
+    edge_lines = [
+        f"- {e['from']} -> {e['to']}"
+        for e in edges
+        if isinstance(e, dict) and e.get("from") in included_ids and e.get("to") in included_ids
+    ] or ["- (no edges between the included blocks - instantiate them side by side)"]
+
+    tools = toolchain_status()
+    iverilog_ok = tools["iverilog"]["available"]
+    verify_note = "" if iverilog_ok else (
+        "\nNOTE: `iverilog`/`vvp` are NOT installed on this machine right now. Still "
+        "write every file (respecting every rule above), skip compile/run, and set "
+        '"model_status" to "generated_unverified" with status_reason "iverilog not installed".')
+
+    return f"""Author and verify a COMPOSITE behavioral model of a {phy_type} PHY block
+diagram at the {level_label} level, in the CURRENT WORKING DIRECTORY ONLY.
+Do not touch any files outside this directory.
+
+Run label: {label}
+
+SCOPE - ARCHITECTURE-MODEL RUN: no transistor-level design, no schematics,
+no SPICE. The deliverables are one behavioral model module per included
+block, a top-level module wiring them together per the diagram edges, a
+self-checking testbench, and its verification log.
+
+## Blocks to model (each gets its own module in its own file)
+{chr(10).join(block_lines)}
+{("Diagram blocks NOT included in this model (pads / not selected by the user): " + ", ".join(skipped) + ".") if skipped else ""}
+
+## Signal-flow edges to wire in the top-level module `{top}` (file `{files['top_file']}`)
+{chr(10).join(edge_lines)}
+Wiring rules: define ONE consistent inter-block signal convention and
+document it in the top module's header comment - for RNM, a `real` data
+signal per edge (clock-generating blocks drive an event/bit clock signal to
+the blocks they feed); for digital Verilog, a bit/vector per edge. Where a
+block model's natural ports don't map 1:1 onto a coarse diagram edge, make a
+documented judgment call rather than inventing extra diagram connectivity.
+Expose the chain's primary input(s) and output(s) as top-level ports.
+
+## Parameter values
+No per-block spec numbers were entered for this run: give every model
+parameter a defensible engineering-judgment default for a generic {phy_type}
+PHY (document each in the file headers), and keep the blocks' defaults
+mutually consistent (e.g. one data rate across the chain).
+{_spec_line("Additional notes from the user", spec.get("notes"))}
+
+{rules}
+
+## Verification (run it yourself)
+```
+iverilog -g2012 -o {top}_tb.vvp {" ".join(sorted(files["block_files"].values()))} {files['top_file']} {files['testbench_file']}
+vvp {top}_tb.vvp     # exit 0 AND prints {ARCH_PASS_TOKEN}; save output to {files['sim_log_file']}
+```
+The testbench `{files['testbench_file']}` must be SELF-CHECKING end to end:
+drive a known input pattern into the chain's first block, and check
+propagation through the top module (a known-answer check where the chain
+allows it; at minimum: the final output responds to the input, no stuck/X
+outputs, plus the mandatory watchdog). It prints exactly one of
+`{ARCH_PASS_TOKEN}` or `{ARCH_FAIL_TOKEN} <reason>`.{verify_note}
+
+## summary.json (the LAST file you write, via the Write tool)
+A single JSON object with exactly these keys:
+   {{
+     "status": "success" or "failed",
+     "error": "" or a short plain-English reason,
+     "deliverable": "arch_model",
+     "model_type": "{model_type}",
+     "cell": "{top}",
+     "top_file": "{files['top_file']}",
+     "block_files": {json.dumps(files['block_files'])},
+     "testbench_file": "{files['testbench_file']}",
+     "sim_log_file": "{files['sim_log_file']}",
+     "model_status": "verified" | "generated_unverified" | "failed",
+     "status_reason": "<why, when not verified>",
+     "blocks_included": {json.dumps(sorted(included_ids))},
+     "notes": "<judgment defaults chosen, wiring caveats>"
+   }}
+   Be honest: "verified" is cross-checked against {ARCH_PASS_TOKEN} in
+   {files['sim_log_file']} by another program. A failed compile or testbench
+   means model_status "failed" and status "failed".
+
+After writing summary.json, give a brief (2-4 sentence) plain-English
+summary including the verification outcome as your final reply.
+"""
+
+
+def _build_arch_stitch_prompt(spec: dict[str, Any]) -> str:
+    """Deliverable = arch_stitch: a TOP-LEVEL xschem schematic stitching the
+    block diagram together as a design - one instance per included block,
+    placed from the filed library cell the user mapped it to (arch_cell_map),
+    wired per the diagram edges. Netlist + rendered PNG; no simulation (the
+    stitched chain's verification is a full-chain job for a later run)."""
+    from libraries import validate_stitch_cell_map  # avoid import cycle at module load
+
+    included = normalize_arch_blocks(spec.get("architecture"), spec.get("arch_blocks"))
+    cell_map = validate_stitch_cell_map(included, spec.get("arch_cell_map"))
+    included_ids = {b["id"] for b in included}
+    arch = spec.get("architecture") or {}
+    edges = arch.get("edges") or arch.get("connections") or []
+    phy_type = spec.get("phy_type") or "phy"
+    top = spec.get("cell") or f"{_safe_verilog_id(phy_type)}_top"
+    label = spec.get("label") or "unlabeled run"
+
+    block_lines = []
+    # Cells mapped without a symbol view: this run generates their .sym FIRST
+    # (from the filed schematic copied into this directory), then
+    # instantiates the freshly written local symbol in the top level.
+    needs_symbol: dict[str, str] = {}  # cell -> sym filename
+    for b in included:
+        library, cell, has_symbol = cell_map[b["id"]]
+        if has_symbol:
+            sym_ref = f"the filed symbol `{library}/{cell}/{cell}.sym`"
+        else:
+            needs_symbol[cell] = f"{cell}.sym"
+            sym_ref = (
+                f"the symbol `{cell}.sym` you generate in step 1 below "
+                "(it resolves from this directory)"
+            )
+        block_lines.append(
+            f"- `{b['id']}` ({b.get('label') or b['id']}; topology: {b.get('topology')}): "
+            f"instantiate {sym_ref} (instance name `x_{_safe_verilog_id(b['id'])}`)"
+        )
+    symbol_section = ""
+    if needs_symbol:
+        sym_lines = "\n".join(
+            f"- `{cell}.sym` - derive its pins EXACTLY from the top-level I/O pins "
+            f"(`ipin`/`opin`/`iopin` instances and their lab= names) of `{cell}.sch`, "
+            "which has been copied into this directory. Do not invent extra pins."
+            for cell in sorted(needs_symbol)
+        )
+        symbol_section = f"""
+## Symbols to generate FIRST (these cells have no symbol view yet)
+{sym_lines}
+Author each per your standard xschem symbol workflow (clean box outline, pin
+attributes, standard-grid pins with correct dir=, name labels, the cell name
+as the visible label). These symbols are also a deliverable of this run -
+they get filed back into their block's library cell afterwards.
+"""
+    skipped = [
+        f"`{b.get('id')}`" for b in (arch.get("blocks") or [])
+        if isinstance(b, dict) and b.get("id") and b["id"] not in included_ids
+    ]
+    edge_lines = [
+        f"- {e['from']} -> {e['to']}"
+        for e in edges
+        if isinstance(e, dict) and e.get("from") in included_ids and e.get("to") in included_ids
+    ] or ["- (no edges between the included blocks - place them side by side, unconnected)"]
+
+    return f"""Stitch a {phy_type} PHY block diagram together as a TOP-LEVEL xschem
+DESIGN schematic in the CURRENT WORKING DIRECTORY ONLY. Do not touch any
+files outside this directory. A project-local `xschemrc` already exists here
+sourcing the PDK AND putting the tool's design libraries on
+XSCHEM_LIBRARY_PATH - the filed symbols below resolve through it as-is.
+
+Run label: {label}
+
+SCOPE - STITCH-ONLY RUN: the deliverables are ONE top-level schematic
+`{top}.sch` instantiating already-designed blocks (plus its netlist and a
+rendered PNG), and any block symbols that had to be generated along the way.
+Do NOT design or modify any block internals, do NOT run any simulation -
+the blocks were designed and verified by their own runs.
+
+## Blocks to place (from their filed library cells)
+{chr(10).join(block_lines)}
+{symbol_section}
+{("Diagram blocks NOT included (pads / not selected): " + ", ".join(skipped) + " - represent a pad connection with a labeled top-level pin instead of an instance.") if skipped else ""}
+
+## Signal-flow edges to wire
+{chr(10).join(edge_lines)}
+Wiring rules: read each instantiated symbol first (its .sym file resolves on
+XSCHEM_LIBRARY_PATH) and wire REAL pin names - never invent pins. Connect
+each edge with a sensibly named net (signal path names like `rx_in`,
+`eq_out`); where a symbol has more pins than the coarse diagram edge implies
+(bias, enable, clocks), tie them to sensibly named/labeled nets or top-level
+pins and say what you did in "notes". Give every instance shared `VDD`/`GND`
+supply rails. Expose the chain's external connections (pad-facing signals,
+reference inputs) as labeled top-level ipin/opin pins.
+Placement: lay instances out left-to-right in signal-flow order (the edge
+list above), clock/bias blocks below the main path, with enough spacing that
+wires stay readable.
+
+## What to actually do (all in this directory)
+1. {"Generate the missing symbols listed above (pins exactly from their copied .sch files), then read" if needs_symbol else "Read"} each instantiated .sym to collect real pin names/geometry.
+2. Hand-write `{top}.sch` per your standard authoring workflow: the
+   instances, wires, supply rails, labeled top-level pins, and a short title.
+3. Netlist it headlessly (`xschem -x -q -n -s {top}.sch`) and CHECK the
+   netlist: one subcircuit call per instance above, edge nets connecting the
+   right instances. (Subcircuit DEFINITIONS may be unresolved in this
+   netlist if a cell has no schematic view here - that is expected and fine;
+   note any such cell in "notes".)
+4. Render `{top}.png` via the standard Xvfb workflow (hide layers 15/17),
+   Read it and visually sanity-check (no overlapping instances/text, wires
+   actually reaching pins) - fix and re-render if not.
+5. As the LAST thing you do, write `summary.json` (via the Write tool):
+   a single JSON object with exactly these keys:
+   {{
+     "status": "success" or "failed",
+     "error": "" or a short plain-English reason,
+     "deliverable": "arch_stitch",
+     "cell": "{top}",
+     "schematic_file": "{top}.sch",
+     "schematic_png": "{top}.png",
+     "netlist_file": "{top}.spice",
+     "blocks_instantiated": {json.dumps({bid: f"{lib}/{cell}" for bid, (lib, cell, _hs) in cell_map.items()})},
+     "symbols_generated": {json.dumps(dict(sorted(needs_symbol.items())))},
+     "top_ports": ["<the labeled top-level pins you exposed>"],
+     "notes": "<extra-pin tie-offs, unresolved subckt definitions, judgment calls>"
+   }}
+   "status" is "success" only if the schematic, netlist and PNG all exist
+   and the netlist really instantiates every block above.
+
+After writing summary.json, give a brief (2-4 sentence) plain-English
+summary as your final reply.
 """
 
 
@@ -674,6 +1308,159 @@ def _format_event(line: str) -> str | None:
     return None
 
 
+def _prepare_symbol_inputs(spec: dict[str, Any], run_dir: Path) -> dict[str, Any]:
+    """For a symbol-only run: locate the block's filed library cell (chosen
+    library, matching topology), copy its schematic view into the run dir,
+    and return the private spec keys _build_symbol_prompt consumes. When no
+    filed schematic exists the symbol is derived from the spec instead
+    (_symbol_source_sch = None)."""
+    from libraries import find_cell_for_topology, find_library_dir  # avoid import cycle at module load
+
+    topology = spec.get("topology") or "cell"
+    library = spec.get("library")
+    cell: str | None = None
+    source: str | None = None
+    if library:
+        try:
+            # The user may have targeted an existing cell explicitly (the
+            # library cell picker); otherwise fall back to whichever cell in
+            # the library was filed for this topology.
+            cell = spec.get("cell") or find_cell_for_topology(library, topology)
+        except ValueError:
+            cell = None
+        if cell:
+            lib_dir = find_library_dir(library)
+            cell_dir = (lib_dir / cell) if lib_dir else None
+            sch = cell_dir / f"{cell}.sch" if cell_dir else None
+            if sch is None or not sch.is_file():
+                # Fall back to the first non-testbench .sch view in the cell.
+                sch = next(
+                    (f for f in sorted(cell_dir.glob("*.sch")) if not f.name.endswith("_tb.sch")),
+                    None,
+                ) if cell_dir else None
+            if sch is not None and sch.is_file():
+                shutil.copy2(sch, run_dir / sch.name)
+                source = sch.name
+    return {"_symbol_cell": cell or topology, "_symbol_source_sch": source}
+
+
+def _prepare_stitch_inputs(spec: dict[str, Any], run_dir: Path) -> None:
+    """For an arch_stitch run: any mapped cell WITHOUT a symbol view gets its
+    filed schematic copied into the run dir, so Circuit_Builder can derive
+    and author the missing `<cell>.sym` there (the library trees themselves
+    are write-denied to it; the backend files the generated symbols back
+    afterwards - see libraries.file_generated_symbols)."""
+    from libraries import find_library_dir, validate_stitch_cell_map
+
+    included = normalize_arch_blocks(spec.get("architecture"), spec.get("arch_blocks"))
+    cell_map = validate_stitch_cell_map(included, spec.get("arch_cell_map"))
+    for _bid, (library, cell, has_symbol) in cell_map.items():
+        if has_symbol:
+            continue
+        lib_dir = find_library_dir(library)
+        sch = (lib_dir / cell / f"{cell}.sch") if lib_dir else None
+        if sch is not None and sch.is_file() and not (run_dir / sch.name).exists():
+            shutil.copy2(sch, run_dir / sch.name)
+
+
+def evaluate_summary(
+    spec: dict[str, Any], run_dir: Path, summary: dict[str, Any]
+) -> tuple[str, str, dict[str, str]]:
+    """Post-run cross-checks of summary.json against what is actually on
+    disk, per deliverable mode. Returns (status, reason, artifacts). Split
+    out of run_circuit_builder so it is unit-testable without invoking the
+    claude CLI.
+
+    - Every claimed artifact file must exist on disk (all modes).
+    - full/schematic_only additionally require a rendered schematic PNG.
+    - symbol requires the .sym file.
+    - model-only modes run the models honesty pass for exactly the requested
+      type and fail the RUN if that model failed (unlike full runs, where a
+      model problem only downgrades the per-model badge - there the
+      transistor-level result stands on its own; here the model IS the run).
+    """
+    deliverable = spec.get("deliverable") or "full"
+
+    artifacts: dict[str, str] = {}
+    missing: list[str] = []
+    for key in (
+        "schematic_png", "netlist_file", "testbench_file", "testbench_sch_file",
+        "sim_log_file", "schematic_file", "symbol_file", "dc_log_file", "top_file",
+    ):
+        fname = summary.get(key)
+        if fname:
+            if (run_dir / fname).exists():
+                artifacts[key] = fname
+            else:
+                missing.append(fname)
+    # arch_model per-block model files / arch_stitch generated symbols are
+    # dicts of filenames, checked the same way.
+    for key in ("block_files", "symbols_generated"):
+        for fname in (summary.get(key) or {}).values():
+            if fname and not (run_dir / fname).exists():
+                missing.append(fname)
+
+    status = summary.get("status", "failed")
+    reason = summary.get("error", "") or ""
+    if status == "success" and missing:
+        status = "failed"
+        reason = f"summary.json claimed success but artifact(s) missing on disk: {', '.join(missing)}"
+    if deliverable in ("full", "schematic_only", "arch_stitch"):
+        if status == "success" and "schematic_png" not in artifacts:
+            status = "failed"
+            reason = reason or "no rendered schematic PNG found"
+    elif deliverable == "symbol":
+        if status == "success" and "symbol_file" not in artifacts:
+            status = "failed"
+            reason = reason or "no .sym symbol file found"
+    elif deliverable == "arch_model":
+        if status == "success" and "top_file" not in artifacts:
+            status = "failed"
+            reason = reason or "no top-level architecture model file found"
+        # A "verified" claim must be backed by the pass token in the sim log
+        # (same honesty rule as the per-block model contract).
+        if summary.get("model_status") == "verified":
+            log_name = summary.get("sim_log_file")
+            log_text = ""
+            if log_name and (run_dir / log_name).exists():
+                try:
+                    log_text = (run_dir / log_name).read_text(errors="replace")
+                except OSError:
+                    log_text = ""
+            if ARCH_PASS_TOKEN not in log_text or ARCH_FAIL_TOKEN in log_text:
+                summary["model_status"] = "failed"
+                summary["status_reason"] = (
+                    f"claimed verified but {log_name or 'sim log'} does not contain "
+                    f"{ARCH_PASS_TOKEN} (or contains {ARCH_FAIL_TOKEN})"
+                )
+        if status == "success" and summary.get("model_status") == "failed":
+            status = "failed"
+            reason = summary.get("status_reason") or "architecture model verification failed"
+
+    # Behavioral-models honesty pass (cycle 2): claimed files must exist, a
+    # "verified" claim must be backed by its pass token in the named sim log.
+    # For full runs the requested list is the models checkboxes and a model
+    # problem is per-model only; for a model-only run it is the deliverable
+    # itself and a failed model fails the run.
+    if deliverable in MODEL_TYPES:
+        model_requested: list[str] | None = [deliverable]
+    elif deliverable == "full":
+        model_requested = spec.get("models")
+    else:
+        model_requested = None
+    model_problems = check_models_in_summary(summary, run_dir, model_requested)
+    if model_problems:
+        note = "Behavioral models: " + "; ".join(model_problems)
+        summary["notes"] = f"{summary.get('notes') or ''} {note}".strip()
+    if deliverable in MODEL_TYPES and status == "success":
+        entry = (summary.get("models") or {}).get(deliverable) or {}
+        if entry.get("status") == "failed":
+            status = "failed"
+            reason = entry.get("status_reason") or f"{deliverable} model generation/verification failed"
+
+    return status, reason, artifacts
+
+
 def run_circuit_builder(
     spec: dict[str, Any],
     run_dir: Path,
@@ -700,6 +1487,19 @@ def run_circuit_builder(
     """
     run_dir.mkdir(parents=True, exist_ok=True)
     _write_project_xschemrc(run_dir)
+
+    deliverable = spec.get("deliverable") or "full"
+    if deliverable == "symbol":
+        # Symbol runs derive pins from the block's filed library schematic
+        # when one exists: copy it into the run dir (Circuit_Builder's
+        # Read/Write scope is the run dir; the library trees are
+        # deliberately write-denied and outside its read workspace) and tell
+        # the prompt builder about it via private spec keys.
+        spec = {**spec, **_prepare_symbol_inputs(spec, run_dir)}
+    elif deliverable == "arch_stitch":
+        # Copy in the schematics of mapped cells missing a symbol view, so
+        # the run can generate those symbols before stitching.
+        _prepare_stitch_inputs(spec, run_dir)
 
     prompt = build_prompt(spec)
     (run_dir / "prompt.txt").write_text(prompt)
@@ -838,37 +1638,10 @@ def run_circuit_builder(
             duration_ms=duration_ms,
         )
 
-    # Cross-check claimed artifacts actually exist on disk - don't trust a
-    # "success" status if the files it claims to have made aren't there.
-    artifacts: dict[str, str] = {}
-    missing: list[str] = []
-    for key in ("schematic_png", "netlist_file", "testbench_file", "testbench_sch_file", "sim_log_file", "schematic_file"):
-        fname = summary.get(key)
-        if fname:
-            if (run_dir / fname).exists():
-                artifacts[key] = fname
-            else:
-                missing.append(fname)
-
-    status = summary.get("status", "failed")
-    reason = summary.get("error", "") or ""
-    if status == "success" and missing:
-        status = "failed"
-        reason = f"summary.json claimed success but artifact(s) missing on disk: {', '.join(missing)}"
-    if status == "success" and "schematic_png" not in artifacts:
-        status = "failed"
-        reason = reason or "no rendered schematic PNG found"
-
-    # Behavioral models (cycle 2): honesty pass over summary.models - claimed
-    # files must exist, a "verified" claim must be backed by its pass token
-    # in the named sim log. Downgrades are PER-MODEL (mutating summary),
-    # deliberately not failing the whole run: the transistor-level result is
-    # still valid and the per-model status badge surfaces the model problem
-    # plainly in the UI.
-    model_problems = check_models_in_summary(summary, run_dir, spec.get("models"))
-    if model_problems:
-        note = "Behavioral models: " + "; ".join(model_problems)
-        summary["notes"] = f"{summary.get('notes') or ''} {note}".strip()
+    # Cross-check summary.json against what's actually on disk (artifact
+    # existence, per-deliverable required outputs, models honesty pass) -
+    # see evaluate_summary above.
+    status, reason, artifacts = evaluate_summary(spec, run_dir, summary)
 
     return CircuitBuilderResult(
         status=status,

@@ -1,10 +1,15 @@
 {
-  "run_id": "89112a768b5b",
+  "run_id": "9b8b7de8b992",
   "topology": "nmos_current_mirror",
   "chosen_architecture": null,
-  "label": "cycle3 calibration: 10uA 1:2 mirror + veriloga/rnm models",
-  "filed_at": "2026-08-21T17:19:10.431750+00:00",
+  "label": "rnm model-only smoke test (deliverable modes)",
+  "deliverable": "rnm",
+  "filed_at": "2026-08-21T22:45:59.374148+00:00",
   "views": [
+    "nmos_current_mirror_rnm.sv",
+    "nmos_current_mirror_rnm_tb.sv",
+    "rnm_sim.log",
+    "summary.json",
     "current_mirror.sch",
     "current_mirror.png",
     "current_mirror.spice",
@@ -13,12 +18,6 @@
     "nmos_current_mirror.va",
     "nmos_current_mirror_va_tb.spice",
     "va_sim.log",
-    "nmos_current_mirror.osdi",
-    "nmos_current_mirror_rnm.sv",
-    "nmos_current_mirror_rnm_tb.sv",
-    "rnm_sim.log",
-    "summary.json"
-  ],
-  "rnm_reverified_at": "2026-08-21T17:30:40.591441+00:00",
-  "rnm_reverified_note": "RNM status upgraded generated_unverified -> verified after iverilog 12.0 install; backed by rnm_sim.log (RNM_TB_PASS)"
+    "nmos_current_mirror.osdi"
+  ]
 }

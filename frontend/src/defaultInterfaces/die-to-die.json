@@ -1,0 +1,209 @@
+{
+  "name": "d2d-mainband-if",
+  "phy_type": "die-to-die",
+  "clock_domains": [
+    {
+      "name": "clk_ref",
+      "freq_mhz": 100,
+      "owner": "external",
+      "source_block": null,
+      "description": "Shared 100 MHz reference; PLL input, CSR/host + LTSM domain, TX word clock."
+    },
+    {
+      "name": "clk_fwd_rx",
+      "freq_mhz": 100,
+      "owner": "afe",
+      "source_block": "d2d-clk",
+      "description": "Received forwarded clock, divided to the RX word rate. Mesochronous to clk_ref (same source both dies) - phase-only FIFO."
+    },
+    {
+      "name": "clk_sb",
+      "freq_mhz": 10,
+      "owner": "external",
+      "source_block": null,
+      "description": "Always-on sideband clock - alive before any mainband training."
+    }
+  ],
+  "signals": [
+    {
+      "name": "rx_pdata",
+      "direction": "a2d",
+      "width": 8,
+      "clock_domain": "clk_fwd_rx",
+      "rate": "word",
+      "rate_mhz": 100,
+      "group": "data",
+      "handshake": "none",
+      "afe_block": "d2d-deser",
+      "digital_block": "deskew",
+      "meaning": "Per-lane deserialized RX word in the forwarded-clock domain. Garbage until the LTSM completes MBTRAIN."
+    },
+    {
+      "name": "tx_pdata",
+      "direction": "d2a",
+      "width": 8,
+      "clock_domain": "clk_ref",
+      "rate": "word",
+      "rate_mhz": 100,
+      "group": "data",
+      "handshake": "none",
+      "afe_block": "d2d-ser",
+      "digital_block": "tx-gbox",
+      "meaning": "Per-lane TX word toward the serializer, clk_ref word domain."
+    },
+    {
+      "name": "sb_rxd",
+      "direction": "a2d",
+      "width": 1,
+      "clock_domain": "clk_sb",
+      "rate": "word",
+      "rate_mhz": 10,
+      "group": "data",
+      "handshake": "none",
+      "afe_block": "d2d-rx",
+      "digital_block": "sideband",
+      "meaning": "Sideband serial RX (UCIe-style always-on channel for parameter exchange/training messages)."
+    },
+    {
+      "name": "sb_txd",
+      "direction": "d2a",
+      "width": 1,
+      "clock_domain": "clk_sb",
+      "rate": "word",
+      "rate_mhz": 10,
+      "group": "data",
+      "handshake": "none",
+      "afe_block": "d2d-tx",
+      "digital_block": "sideband",
+      "meaning": "Sideband serial TX."
+    },
+    {
+      "name": "lane_repair_sel",
+      "direction": "d2a",
+      "width": 4,
+      "clock_domain": "clk_ref",
+      "rate": "quasi_static",
+      "rate_mhz": null,
+      "group": "control",
+      "handshake": "level",
+      "afe_block": "d2d-tx",
+      "digital_block": "tx-gbox",
+      "meaning": "Lane remap/repair select (single-lane-shift, UCIe-like). Changed only in MBINIT repair."
+    },
+    {
+      "name": "txrx_imp_code",
+      "direction": "d2a",
+      "width": 5,
+      "clock_domain": "clk_ref",
+      "rate": "quasi_static",
+      "rate_mhz": null,
+      "group": "control",
+      "handshake": "level",
+      "afe_block": "d2d-tx",
+      "digital_block": "ltsm",
+      "meaning": "TX driver impedance compensation code from MBINIT calibration."
+    },
+    {
+      "name": "pll_locked",
+      "direction": "a2d",
+      "width": 1,
+      "clock_domain": "async",
+      "rate": "async_event",
+      "rate_mhz": null,
+      "group": "status",
+      "handshake": "2ff_sync",
+      "afe_block": "d2d-pll",
+      "digital_block": "ltsm",
+      "meaning": "PLL lock detector; gates leaving RESET. Synchronized into clk_ref."
+    },
+    {
+      "name": "rstn_por",
+      "direction": "ext",
+      "width": 1,
+      "clock_domain": "async",
+      "rate": "async_event",
+      "rate_mhz": null,
+      "group": "reset",
+      "handshake": "2ff_sync",
+      "afe_block": null,
+      "digital_block": "ltsm",
+      "meaning": "Chip POR, async assert; release synchronized per domain."
+    },
+    {
+      "name": "en_afe",
+      "direction": "d2a",
+      "width": 1,
+      "clock_domain": "clk_ref",
+      "rate": "quasi_static",
+      "rate_mhz": null,
+      "group": "power",
+      "handshake": "level",
+      "afe_block": "d2d-pll",
+      "digital_block": "ltsm",
+      "meaning": "Master mainband AFE enable (PLL, drivers, receivers). Sideband AFE is always on."
+    }
+  ],
+  "cdc_points": [
+    {
+      "signal": "rx_pdata",
+      "from_domain": "clk_fwd_rx",
+      "to_domain": "clk_ref",
+      "strategy": "async_fifo",
+      "notes": "Phase-only elastic FIFO after the deskew aligner (mesochronous: both dies share the reference, no ppm drift)."
+    },
+    {
+      "signal": "pll_locked",
+      "from_domain": "async",
+      "to_domain": "clk_ref",
+      "strategy": "2ff",
+      "notes": "Level signal; 2-flop synchronizer."
+    },
+    {
+      "signal": "sb_rxd",
+      "from_domain": "clk_sb",
+      "to_domain": "clk_ref",
+      "strategy": "async_fifo",
+      "notes": "Sideband packets cross into the LTSM domain through a small message FIFO."
+    }
+  ],
+  "reset_sequence": [
+    {
+      "step": 1,
+      "action": "POR asserts asynchronously; mainband disabled, sideband logic held in SBINIT",
+      "signal": "rstn_por",
+      "wait_for": "-"
+    },
+    {
+      "step": 2,
+      "action": "POR release synchronized into each domain (2ff per domain)",
+      "signal": "rstn_por",
+      "wait_for": "2 clocks per domain"
+    }
+  ],
+  "power_sequence": [
+    {
+      "step": 1,
+      "action": "Sideband up (always-on): SBINIT parameter exchange over sb_rxd/sb_txd",
+      "signal": "sb_txd",
+      "wait_for": "SBINIT handshake complete"
+    },
+    {
+      "step": 2,
+      "action": "Enable mainband AFE (en_afe=1)",
+      "signal": "en_afe",
+      "wait_for": "pll_locked (timeout 500 us -> ERROR)"
+    },
+    {
+      "step": 3,
+      "action": "MBINIT: impedance cal (txrx_imp_code) + lane repair (lane_repair_sel)",
+      "signal": "txrx_imp_code",
+      "wait_for": "cal + repair done"
+    },
+    {
+      "step": 4,
+      "action": "MBTRAIN: per-lane deskew training, then ACTIVE",
+      "signal": null,
+      "wait_for": "deskew lock on all lanes"
+    }
+  ]
+}

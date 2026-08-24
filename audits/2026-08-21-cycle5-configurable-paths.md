@@ -108,3 +108,15 @@ project-side.
 - oxlint: the new `SettingsPanel` carries the same pre-existing
   `set-state-in-effect` warning pattern as LogPanel/SchematicPanel/
   ArchitectureDiagram; no errors.
+
+### Addendum (2026-08-22, user request): removed "Virtuoso" branding
+Wording sweep only: all references to the Cadence product name "Virtuoso"
+(comments, docstrings, docs, one UI label) replaced with neutral phrasing
+("hierarchical library/cell/view", "design library"). No directories, API
+routes, functions, or JSON keys renamed (none contained the name). Files
+touched: backend/main.py, backend/libraries.py, backend/circuit_builder.py,
+frontend/src/SpecForm.jsx, frontend/src/App.css, frontend/src/api.js,
+IMPROVEMENTS-2026-08-21.md, audits/2026-08-20-behavioral-models-spec.md,
+libraries/cal_runs/current_mirror/xschemrc (generated file, text comment
+only). Visible change: library-picker label on the spec form now reads
+"Design library (the built cell and its views are filed here)".

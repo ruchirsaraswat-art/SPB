@@ -19,6 +19,14 @@
 // `topology: null` marks a node that can't be designed in this analog flow:
 // PAD nodes (kind: "pad"), photodiodes, digital calibration logic. They're
 // drawn for architectural completeness and can be wired to, but not selected.
+//
+// 2026-08-23 (digital-arch spec): the localStorage helper layer is factored
+// into makeArchStore(prefix, archMap) so the DIGITAL architecture view
+// (frontend/src/digitalArchitectures.js) reuses the exact same
+// hierarchy-aware edit records under its own key namespace ("dig-arch-" vs
+// "arch-") instead of duplicating them. The named exports below delegate to
+// the default "arch-" store, so every pre-existing storage key and call site
+// is unchanged.
 
 export const PHY_DESCRIPTIONS = {
   "ser-des": "High-speed serializer/deserializer for chip-to-chip communication",
@@ -242,68 +250,348 @@ export const PHY_ARCHITECTURES = {
 };
 
 // ---------------------------------------------------------------------------
-// Hierarchy-aware helpers. A block may carry `children: {blocks, edges}` -
-// either statically (defined above) or created by the user merging blocks
-// into a group in the diagram. `path` is the list of ancestor block ids from
-// the top level down to the level being viewed ([] = top level). All user
-// edits (added blocks, hidden blocks, layout, wire edits) are stored per
-// (phyType, path) level.
+// Namespaced, hierarchy-aware store factory. A block may carry `children:
+// {blocks, edges}` - either statically (defined in the arch map) or created
+// by the user merging blocks into a group in the diagram. `path` is the list
+// of ancestor block ids from the top level down to the level being viewed
+// ([] = top level). All user edits (added blocks, hidden blocks, layout,
+// wire edits) are stored per (phyType, path) level, under localStorage keys
+// namespaced by `prefix` ("arch-" = the AFE view, "dig-arch-" = the digital
+// view) so the two diagram workspaces never collide.
 
-export function levelStorageId(phyType, path = []) {
-  return `${phyType}:${path.join("/") || "root"}`;
+function truncateShort(s, n = 16) {
+  if (!s) return "";
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 
-// User-added blocks (from the diagram's "Add block" prompt or "Merge blocks"
-// grouping) persist per level. Read fresh on each call so App.jsx's maturity
-// computation sees blocks added by the diagram without extra state plumbing.
-export function userBlocksKey(phyType, path = []) {
-  return `arch-user-blocks-${levelStorageId(phyType, path)}`;
+function wireKey(c) {
+  return `${c.from}->${c.to}`;
 }
 
-export function userBlocksForPhy(phyType, path = []) {
-  try {
-    const stored = JSON.parse(localStorage.getItem(userBlocksKey(phyType, path)));
-    return Array.isArray(stored) ? stored : [];
-  } catch {
-    return [];
+export function makeArchStore(prefix, archMap) {
+  const levelStorageId = (phyType, path = []) => `${phyType}:${path.join("/") || "root"}`;
+
+  // User-added blocks (from the diagram's "Add block" prompt or "Merge
+  // blocks" grouping) persist per level. Read fresh on each call so callers'
+  // maturity computations see blocks added by the diagram without extra
+  // state plumbing.
+  const userBlocksKey = (phyType, path = []) =>
+    `${prefix}user-blocks-${levelStorageId(phyType, path)}`;
+
+  function userBlocksForPhy(phyType, path = []) {
+    try {
+      const stored = JSON.parse(localStorage.getItem(userBlocksKey(phyType, path)));
+      return Array.isArray(stored) ? stored : [];
+    } catch {
+      return [];
+    }
   }
-}
 
-// Default blocks the user deleted from the diagram (by id, per level).
-// "Reset diagram" clears it. User-added blocks are deleted by removing them
-// from the userBlocks list instead.
-export function hiddenBlocksKey(phyType, path = []) {
-  return `arch-hidden-blocks-${levelStorageId(phyType, path)}`;
-}
+  // Default blocks the user deleted from the diagram (by id, per level).
+  // "Reset diagram" clears it. User-added blocks are deleted by removing
+  // them from the userBlocks list instead.
+  const hiddenBlocksKey = (phyType, path = []) =>
+    `${prefix}hidden-blocks-${levelStorageId(phyType, path)}`;
 
-export function hiddenBlocksForPhy(phyType, path = []) {
-  try {
-    const stored = JSON.parse(localStorage.getItem(hiddenBlocksKey(phyType, path)));
-    return Array.isArray(stored) ? stored : [];
-  } catch {
-    return [];
+  function hiddenBlocksForPhy(phyType, path = []) {
+    try {
+      const stored = JSON.parse(localStorage.getItem(hiddenBlocksKey(phyType, path)));
+      return Array.isArray(stored) ? stored : [];
+    } catch {
+      return [];
+    }
   }
-}
 
-// The {blocks, edges} definition at a given path, walking children through
-// both static blocks and user-created groups.
-export function archLevel(phyType, path = []) {
-  let level = PHY_ARCHITECTURES[phyType] || { blocks: [], edges: [] };
-  for (let i = 0; i < path.length; i++) {
-    const merged = [...(level.blocks || []), ...userBlocksForPhy(phyType, path.slice(0, i))];
-    const blk = merged.find((b) => b.id === path[i]);
-    level = blk?.children || { blocks: [], edges: [] };
+  // The {blocks, edges} definition at a given path, walking children through
+  // both static blocks and user-created groups.
+  function archLevel(phyType, path = []) {
+    let level = archMap[phyType] || { blocks: [], edges: [] };
+    for (let i = 0; i < path.length; i++) {
+      const merged = [...(level.blocks || []), ...userBlocksForPhy(phyType, path.slice(0, i))];
+      const blk = merged.find((b) => b.id === path[i]);
+      level = blk?.children || { blocks: [], edges: [] };
+    }
+    return level;
   }
-  return level;
+
+  // Per-block property overrides (label/short/topology) on DEFAULT blocks -
+  // used by chat patches (rename_block / set_topology) which may target
+  // built-in blocks that don't live in the userBlocks list. Keyed by id.
+  const blockOverridesKey = (phyType, path = []) =>
+    `${prefix}block-overrides-${levelStorageId(phyType, path)}`;
+
+  function blockOverridesForPhy(phyType, path = []) {
+    try {
+      const stored = JSON.parse(localStorage.getItem(blockOverridesKey(phyType, path)));
+      return stored && typeof stored === "object" && !Array.isArray(stored) ? stored : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function blocksForPhy(phyType, path = []) {
+    const hidden = hiddenBlocksForPhy(phyType, path);
+    const overrides = blockOverridesForPhy(phyType, path);
+    return (
+      [...(archLevel(phyType, path).blocks || []), ...userBlocksForPhy(phyType, path)]
+        // hidden only ever holds DEFAULT block ids - a user/loaded block may
+        // legitimately reuse a default id (e.g. a saved architecture keeping
+        // "sampler"), so don't let the hidden default swallow it
+        .filter((b) => b.user || !hidden.includes(b.id))
+        .map((b) => (overrides[b.id] ? { ...b, ...overrides[b.id] } : b))
+    );
+  }
+
+  function edgesForPhy(phyType, path = []) {
+    return archLevel(phyType, path).edges || [];
+  }
+
+  const wireEditsKey = (phyType, path = []) =>
+    `${prefix}wires-${levelStorageId(phyType, path)}`;
+
+  const layoutKeyForPhy = (phyType, path = []) =>
+    `${prefix}layout-${levelStorageId(phyType, path)}`;
+
+  function wireEditsForPhy(phyType, path = []) {
+    try {
+      const stored = JSON.parse(localStorage.getItem(wireEditsKey(phyType, path)));
+      return stored && Array.isArray(stored.removed) && Array.isArray(stored.added)
+        ? stored
+        : { removed: [], added: [] };
+    } catch {
+      return { removed: [], added: [] };
+    }
+  }
+
+  // The wires actually displayed at a level: defaults minus user/patch
+  // deletions, plus manual/patch additions, deduped, dangling dropped
+  // (removing a block takes its wires with it) - same rule the diagram uses.
+  function effectiveEdgesForPhy(phyType, path = []) {
+    const edits = wireEditsForPhy(phyType, path);
+    const ids = new Set(blocksForPhy(phyType, path).map((b) => b.id));
+    const out = [];
+    const seen = new Set();
+    for (const c of [
+      ...edgesForPhy(phyType, path).filter((c) => !edits.removed.includes(wireKey(c))),
+      ...edits.added,
+    ]) {
+      const key = wireKey(c);
+      if (seen.has(key) || !ids.has(c.from) || !ids.has(c.to)) continue;
+      seen.add(key);
+      out.push({ from: c.from, to: c.to });
+    }
+    return out;
+  }
+
+  // The top-level architecture exactly as displayed - the shape POST
+  // /api/arch_chat and /api/architectures expect ({blocks, edges}; extra
+  // block keys pass through untouched).
+  function currentArchitecture(phyType) {
+    return { blocks: blocksForPhy(phyType), edges: effectiveEdgesForPhy(phyType) };
+  }
+
+  const ARCH_STATE_KEYS = [userBlocksKey, hiddenBlocksKey, blockOverridesKey, wireEditsKey, layoutKeyForPhy];
+
+  // Snapshot/restore of the whole top-level edit record set - Undo for an
+  // applied chat patch (and for a loaded architecture).
+  function archSnapshot(phyType) {
+    const snap = {};
+    for (const keyFn of ARCH_STATE_KEYS) {
+      const k = keyFn(phyType);
+      snap[k] = localStorage.getItem(k);
+    }
+    return snap;
+  }
+
+  function restoreArchSnapshot(phyType, snap) {
+    for (const keyFn of ARCH_STATE_KEYS) {
+      const k = keyFn(phyType);
+      if (snap[k] == null) localStorage.removeItem(k);
+      else localStorage.setItem(k, snap[k]);
+    }
+  }
+
+  // Apply a server-validated chat patch (ops IN ORDER) to the top-level
+  // architecture. remove_block also purges its wires; ids/topologies were
+  // already validated server-side, so this just executes.
+  function applyArchOps(phyType, ops) {
+    let user = userBlocksForPhy(phyType);
+    let hidden = hiddenBlocksForPhy(phyType);
+    let overrides = { ...blockOverridesForPhy(phyType) };
+    let edits = { removed: [...wireEditsForPhy(phyType).removed], added: [...wireEditsForPhy(phyType).added] };
+    const defaults = archLevel(phyType).blocks || [];
+    const defaultEdges = archLevel(phyType).edges || [];
+
+    const visibleBlocks = () =>
+      [...defaults, ...user].filter((b) => b.user || !hidden.includes(b.id));
+
+    for (const op of ops || []) {
+      switch (op.op) {
+        case "add_block": {
+          const vis = visibleBlocks();
+          const maxRow = Math.max(0, ...vis.map((b) => b.row ?? 0));
+          // Consultants sometimes drop a new block onto an already-occupied
+          // grid cell (they don't see the layout) - bump it down to the first
+          // free row in that column so nothing renders hidden underneath.
+          const occupied = new Set(vis.map((b, i) => `${b.col ?? i},${b.row ?? 0}`));
+          const col = op.col ?? 0;
+          let row = op.row ?? maxRow + 1;
+          while (occupied.has(`${col},${row}`)) row += 1;
+          user = [
+            ...user,
+            {
+              id: op.id,
+              label: op.label,
+              short: truncateShort(op.label),
+              topology: op.topology ?? null,
+              ...(op.kind ? { kind: op.kind } : {}),
+              col,
+              row,
+              user: true,
+            },
+          ];
+          break;
+        }
+        case "remove_block": {
+          if (user.some((b) => b.id === op.id)) {
+            user = user.filter((b) => b.id !== op.id);
+          } else {
+            if (!hidden.includes(op.id)) hidden = [...hidden, op.id];
+          }
+          delete overrides[op.id];
+          // purge wires touching the block (dangling wires are dropped at
+          // render time too, but keep the records clean)
+          edits.added = edits.added.filter((c) => c.from !== op.id && c.to !== op.id);
+          for (const c of defaultEdges) {
+            if ((c.from === op.id || c.to === op.id) && !edits.removed.includes(wireKey(c))) {
+              edits.removed = [...edits.removed, wireKey(c)];
+            }
+          }
+          break;
+        }
+        case "rename_block": {
+          if (user.some((b) => b.id === op.id)) {
+            user = user.map((b) =>
+              b.id === op.id ? { ...b, label: op.label, short: truncateShort(op.label) } : b
+            );
+          } else {
+            overrides[op.id] = { ...(overrides[op.id] || {}), label: op.label, short: truncateShort(op.label) };
+          }
+          break;
+        }
+        case "set_topology": {
+          const topo = op.topology ?? null;
+          if (user.some((b) => b.id === op.id)) {
+            user = user.map((b) => (b.id === op.id ? { ...b, topology: topo } : b));
+          } else {
+            overrides[op.id] = { ...(overrides[op.id] || {}), topology: topo };
+          }
+          break;
+        }
+        case "add_connection": {
+          const key = wireKey(op);
+          if (edits.removed.includes(key)) {
+            edits.removed = edits.removed.filter((k) => k !== key);
+          } else if (
+            !edits.added.some((c) => wireKey(c) === key) &&
+            !defaultEdges.some((c) => wireKey(c) === key)
+          ) {
+            edits.added = [...edits.added, { from: op.from, to: op.to }];
+          }
+          break;
+        }
+        case "remove_connection": {
+          const key = wireKey(op);
+          if (edits.added.some((c) => wireKey(c) === key)) {
+            edits.added = edits.added.filter((c) => wireKey(c) !== key);
+          } else if (!edits.removed.includes(key)) {
+            edits.removed = [...edits.removed, key];
+          }
+          break;
+        }
+        default:
+          break; // unknown ops never reach here (server rejects them)
+      }
+    }
+
+    try {
+      localStorage.setItem(userBlocksKey(phyType), JSON.stringify(user));
+      localStorage.setItem(hiddenBlocksKey(phyType), JSON.stringify(hidden));
+      localStorage.setItem(blockOverridesKey(phyType), JSON.stringify(overrides));
+      localStorage.setItem(wireEditsKey(phyType), JSON.stringify(edits));
+    } catch {
+      // localStorage unavailable - the patch just won't persist
+    }
+  }
+
+  // Replace the displayed top-level architecture of `phyType` with a saved
+  // custom one: every saved block becomes a user block (defaults all hidden),
+  // every saved edge a manual wire. "Reset diagram" still restores defaults.
+  function loadArchitectureIntoPhy(phyType, arch) {
+    const blocks = (arch?.blocks || []).map((b) => ({ ...b, user: true }));
+    const defaults = archLevel(phyType).blocks || [];
+    const defaultEdges = archLevel(phyType).edges || [];
+    try {
+      localStorage.setItem(userBlocksKey(phyType), JSON.stringify(blocks));
+      localStorage.setItem(hiddenBlocksKey(phyType), JSON.stringify(defaults.map((b) => b.id)));
+      localStorage.setItem(blockOverridesKey(phyType), JSON.stringify({}));
+      localStorage.setItem(
+        wireEditsKey(phyType),
+        JSON.stringify({ removed: defaultEdges.map(wireKey), added: arch?.edges || [] })
+      );
+      localStorage.removeItem(layoutKeyForPhy(phyType));
+    } catch {
+      // localStorage unavailable
+    }
+  }
+
+  return {
+    prefix,
+    archMap,
+    levelStorageId,
+    userBlocksKey,
+    userBlocksForPhy,
+    hiddenBlocksKey,
+    hiddenBlocksForPhy,
+    archLevel,
+    blockOverridesKey,
+    blockOverridesForPhy,
+    blocksForPhy,
+    edgesForPhy,
+    wireEditsKey,
+    layoutKeyForPhy,
+    wireEditsForPhy,
+    effectiveEdgesForPhy,
+    currentArchitecture,
+    archSnapshot,
+    restoreArchSnapshot,
+    applyArchOps,
+    loadArchitectureIntoPhy,
+  };
 }
 
-export function blocksForPhy(phyType, path = []) {
-  const hidden = hiddenBlocksForPhy(phyType, path);
-  return [...(archLevel(phyType, path).blocks || []), ...userBlocksForPhy(phyType, path)].filter(
-    (b) => !hidden.includes(b.id)
-  );
-}
+// The default (AFE) store: exact same storage keys as before the factoring
+// ("arch-user-blocks-...", "arch-wires-...", ...), so existing user edits
+// survive this refactor untouched.
+export const afeArchStore = makeArchStore("arch-", PHY_ARCHITECTURES);
 
-export function edgesForPhy(phyType, path = []) {
-  return archLevel(phyType, path).edges || [];
-}
+// Backwards-compatible named exports (every pre-existing call site).
+export const levelStorageId = afeArchStore.levelStorageId;
+export const userBlocksKey = afeArchStore.userBlocksKey;
+export const userBlocksForPhy = afeArchStore.userBlocksForPhy;
+export const hiddenBlocksKey = afeArchStore.hiddenBlocksKey;
+export const hiddenBlocksForPhy = afeArchStore.hiddenBlocksForPhy;
+export const archLevel = afeArchStore.archLevel;
+export const blockOverridesKey = afeArchStore.blockOverridesKey;
+export const blockOverridesForPhy = afeArchStore.blockOverridesForPhy;
+export const blocksForPhy = afeArchStore.blocksForPhy;
+export const edgesForPhy = afeArchStore.edgesForPhy;
+export const wireEditsKey = afeArchStore.wireEditsKey;
+export const layoutKeyForPhy = afeArchStore.layoutKeyForPhy;
+export const wireEditsForPhy = afeArchStore.wireEditsForPhy;
+export const effectiveEdgesForPhy = afeArchStore.effectiveEdgesForPhy;
+export const currentArchitecture = afeArchStore.currentArchitecture;
+export const archSnapshot = afeArchStore.archSnapshot;
+export const restoreArchSnapshot = afeArchStore.restoreArchSnapshot;
+export const applyArchOps = afeArchStore.applyArchOps;
+export const loadArchitectureIntoPhy = afeArchStore.loadArchitectureIntoPhy;

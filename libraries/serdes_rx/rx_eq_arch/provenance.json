@@ -1,0 +1,15 @@
+{
+  "run_id": "e761d740c3cf",
+  "topology": "custom",
+  "chosen_architecture": null,
+  "label": "ser-des architecture model (1 block)",
+  "deliverable": "arch_model",
+  "filed_at": "2026-08-22T20:21:38.407767+00:00",
+  "views": [
+    "rx_eq_arch_tb.sv",
+    "arch_sim.log",
+    "rx_eq_arch_rnm.sv",
+    "rx_eq_rnm.sv",
+    "summary.json"
+  ]
+}

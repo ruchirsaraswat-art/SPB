@@ -117,6 +117,81 @@ def supported_model_types(topology: str) -> list[str]:
     return [t for t in MODEL_TYPES if matrix.get(t) is True]
 
 
+def model_guidance(topology: str, model_type: str) -> str:
+    """Public accessor for the per-topology modeling guidance paragraph -
+    used by the architecture-model prompt, which needs one paragraph per
+    included block."""
+    return _guidance(topology, model_type)
+
+
+def normalize_arch_blocks(
+    architecture: dict | None, arch_blocks: list[str] | None
+) -> list[dict[str, Any]]:
+    """Shared normalization for the architecture-wide deliverables
+    (arch_model and arch_stitch): validate the {blocks, edges} shape, resolve
+    the user's subset selection, and return the included DESIGNABLE blocks
+    (topology-null blocks - pads etc. - are drawing, not circuits). Raises
+    ValueError on a malformed architecture, unknown ids, or an all-pads
+    selection."""
+    if not isinstance(architecture, dict) or not isinstance(architecture.get("blocks"), list):
+        raise ValueError("this deliverable requires architecture={'blocks': [...], 'edges': [...]}")
+    blocks = [b for b in architecture["blocks"] if isinstance(b, dict) and b.get("id")]
+    if not blocks:
+        raise ValueError("architecture.blocks is empty - nothing to work on")
+    by_id = {b["id"]: b for b in blocks}
+    if arch_blocks:
+        unknown = sorted(set(arch_blocks) - set(by_id))
+        if unknown:
+            raise ValueError(
+                f"arch_blocks id(s) not present in the architecture: {', '.join(unknown)}"
+            )
+        chosen = [by_id[i] for i in arch_blocks]
+    else:
+        chosen = blocks
+    designable = [b for b in chosen if b.get("topology")]
+    if not designable:
+        raise ValueError(
+            "none of the included blocks is designable (all have topology=null, "
+            "e.g. pads) - pick at least one real circuit block"
+        )
+    return designable
+
+
+def validate_arch_model_request(
+    architecture: dict | None,
+    arch_blocks: list[str] | None,
+    model_type: str,
+) -> list[dict[str, Any]]:
+    """Validation for deliverable='arch_model' (behavioral model of the whole
+    block diagram, or of a user-chosen subset of its blocks). Raises
+    ValueError (a 422 via main.py) on a malformed architecture, unknown block
+    ids, no designable blocks, or a model type inapplicable to any included
+    block (same MODEL_APPLICABILITY reasons as everywhere else - RNM is the
+    only level applicable to every topology, which is why it is the default).
+
+    Returns the normalized list of INCLUDED, designable blocks (dicts with at
+    least id/topology; pads and other topology-null blocks are silently
+    excluded - they are architectural drawing, not modelable circuits)."""
+    if model_type not in ("rnm", "verilog"):
+        raise ValueError(
+            f"arch_model_type must be 'rnm' or 'verilog', got {model_type!r} "
+            "(Verilog-A has no notion of a mixed clocked/analog top-level here)"
+        )
+    designable = normalize_arch_blocks(architecture, arch_blocks)
+    problems = []
+    for b in designable:
+        matrix = MODEL_APPLICABILITY.get(b["topology"]) or MODEL_APPLICABILITY["custom"]
+        if matrix.get(model_type) is not True:
+            problems.append(f"{b['id']} ({b['topology']}): {matrix.get(model_type)}")
+    if problems:
+        raise ValueError(
+            f"model type '{model_type}' is not applicable to every included block - "
+            + "; ".join(problems)
+            + " - use 'rnm' (applicable to all block types) or exclude those blocks"
+        )
+    return designable
+
+
 def validate_models_request(topology: str, models: list[str] | None) -> None:
     """Raises ValueError (surfaced as 422 by main.py's model validator) for
     unknown model-type strings or a type the applicability matrix says makes
@@ -531,34 +606,61 @@ def _guidance(topology: str, model_type: str) -> str:
     return _RNM_GUIDANCE[_RNM_CLASS_OF.get(topology, "custom")]
 
 
-def build_models_prompt_section(topology: str, requested: list[str]) -> str:
+def build_models_prompt_section(
+    topology: str, requested: list[str], standalone: bool = False
+) -> str:
     """The "Behavioral models" section appended to the Circuit_Builder prompt
     when any model checkbox was set. Includes only the requested types, each
     with its deliverable filenames, per-block modeling guidance, verification
-    commands + pass-token protocol, and the summary.json contract."""
+    commands + pass-token protocol, and the summary.json contract.
+
+    standalone=True (deliverable-mode model-only runs): the SAME per-type
+    contract text, with only the framing changed - there is no transistor-level
+    design in the run, so model parameters default to the spec targets (plus
+    documented judgment values) instead of ngspice-measured numbers. The
+    per-type deliverables/restrictions/verification blocks are shared verbatim
+    between the two framings on purpose - do not fork them."""
     if not requested:
         return ""
     tools = toolchain_status()
     block = topology
-    parts: list[str] = [
-        "\n## Behavioral models (requested by the user - produce these IN ADDITION "
-        "to the transistor-level design above, in this same directory)",
-        "Every model parameter must default to the value the transistor-level "
-        "design ACTUALLY ACHIEVED (per your ngspice measurements), falling back "
-        "to the target spec value for anything not measurable - the model must "
-        "describe the circuit you built, not the ideal spec (e.g. if the "
-        "schematic only achieved 8 dB peaking vs a 10 dB target, set the model "
-        "parameter to 8 dB and note it). Where the user left a spec field "
-        "blank, use the same judgment value as the transistor-level design and "
-        "keep the two consistent.",
-        "Every model file must start with a header comment block: block name, "
-        "date, abstraction level, a parameter <-> spec-field mapping table, "
-        "what is NOT modeled, and verification status.",
-        "Every testbench must be SELF-CHECKING: it computes its checks itself "
-        "and prints exactly one machine-greppable token (listed per type "
-        "below). Run the verification commands yourself and report honestly "
-        "what happened - same rule as reporting exactly what ngspice measured.",
-    ]
+    if standalone:
+        parts: list[str] = [
+            "\n## Behavioral model deliverables (this run's ONLY output - no "
+            "transistor-level design, no schematic, no SPICE netlist of the "
+            "circuit itself; everything in this same directory)",
+            "Every model parameter must default to the target spec value given "
+            "above. For any spec field left unspecified, pick a defensible "
+            "engineering-judgment value, and record every such assumption in "
+            "the model's header comment and in summary.json's \"notes\".",
+            "Every model file must start with a header comment block: block name, "
+            "date, abstraction level, a parameter <-> spec-field mapping table, "
+            "what is NOT modeled, and verification status.",
+            "Every testbench must be SELF-CHECKING: it computes its checks itself "
+            "and prints exactly one machine-greppable token (listed per type "
+            "below). Run the verification commands yourself and report honestly "
+            "what happened.",
+        ]
+    else:
+        parts = [
+            "\n## Behavioral models (requested by the user - produce these IN ADDITION "
+            "to the transistor-level design above, in this same directory)",
+            "Every model parameter must default to the value the transistor-level "
+            "design ACTUALLY ACHIEVED (per your ngspice measurements), falling back "
+            "to the target spec value for anything not measurable - the model must "
+            "describe the circuit you built, not the ideal spec (e.g. if the "
+            "schematic only achieved 8 dB peaking vs a 10 dB target, set the model "
+            "parameter to 8 dB and note it). Where the user left a spec field "
+            "blank, use the same judgment value as the transistor-level design and "
+            "keep the two consistent.",
+            "Every model file must start with a header comment block: block name, "
+            "date, abstraction level, a parameter <-> spec-field mapping table, "
+            "what is NOT modeled, and verification status.",
+            "Every testbench must be SELF-CHECKING: it computes its checks itself "
+            "and prints exactly one machine-greppable token (listed per type "
+            "below). Run the verification commands yourself and report honestly "
+            "what happened - same rule as reporting exactly what ngspice measured.",
+        ]
 
     if "veriloga" in requested:
         files = deliverable_files(block, "veriloga")

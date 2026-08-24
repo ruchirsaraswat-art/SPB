@@ -1,0 +1,15 @@
+{
+  "status": "success",
+  "error": "",
+  "deliverable": "arch_model",
+  "model_type": "rnm",
+  "cell": "tia_arch",
+  "top_file": "tia_arch_rnm.sv",
+  "block_files": {"tia": "tia_rnm.sv"},
+  "testbench_file": "tia_arch_tb.sv",
+  "sim_log_file": "arch_sim.log",
+  "model_status": "verified",
+  "status_reason": "",
+  "blocks_included": ["tia"],
+  "notes": "No spec numbers were provided; engineering-judgment defaults for a generic 10 Gb/s NRZ optical PHY RX front-end: Zt=5 kohm, single dominant pole BW=7 GHz (~0.7x data rate), output saturation +/-0.3 V (full-swing input 60 uA), internal model sample tick TS=5 ps (< 1/(20*BW)=7.14 ps and < 0.25 UI). Only the tia block was selected, so tia_arch has no inter-block edges; the TIA's natural ports (real i_in_a in amperes, real v_out_v in volts) are exposed directly as the chain's primary I/O. Signal convention documented in tia_arch_rnm.sv header: one directional real per edge (A for current-domain, V for voltage-domain). Measured by TB: Zt error ~0 dB, pole-frequency response -2.99 dB (target -3 +/- 1 dB, aliasing check), overdrive at 3x full swing clips exactly at +/-0.3 V both polarities. Bidirectional loading, noise, and supply-net modeling intentionally out of scope at RNM level."
+}

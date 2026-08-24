@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { createLibrary, getTopologies, getToolchain, listLibraries } from "./api";
 import PhyArchitectureSelector from "./PhyArchitectureSelector";
+import ArchGenerateMenu from "./ArchGenerateMenu";
 
 const NEW_LIBRARY = "__new__";
 
@@ -15,6 +16,29 @@ const MODEL_TYPES = [
   { value: "verilog", label: "Digital Verilog", detail: "event-driven bit-level model for RTL sims" },
   { value: "rnm", label: "RNM (SystemVerilog real)", detail: "real-number model for fast full-link sims" },
 ];
+
+// Single-deliverable run modes (Generate dropdown). "full" is the original
+// design+simulate(+models) flow; the model-type options are subject to the
+// same per-topology applicability matrix as the checkboxes and render
+// disabled (with the matrix's reason) when inapplicable.
+const DELIVERABLE_OPTIONS = [
+  { value: "full", label: "Full flow (design + simulate + models)" },
+  { value: "schematic_only", label: "Schematic only (draw + netlist + PNG, no sim suite)" },
+  { value: "symbol", label: "Symbol only (xschem .sym)" },
+  { value: "veriloga", label: "Verilog-A model only", model: "veriloga" },
+  { value: "verilog", label: "Digital Verilog model only", model: "verilog" },
+  { value: "rnm", label: "RNM model only (SystemVerilog real)", model: "rnm" },
+];
+
+const MODEL_DELIVERABLES = ["veriloga", "verilog", "rnm"];
+
+const SUBMIT_LABELS = {
+  schematic_only: "Generate schematic",
+  symbol: "Generate symbol",
+  veriloga: "Generate Verilog-A model",
+  verilog: "Generate Verilog model",
+  rnm: "Generate RNM model",
+};
 
 // Which locally-probed tool verifies each model type - used for the inline
 // "will be generated but unverified" warning when that tool is missing.
@@ -114,15 +138,41 @@ const DEFAULTS = {
   // design (opt-in: model generation/verification meaningfully lengthens a
   // Circuit_Builder run, so nothing is pre-checked)
   models: [],
-  // Virtuoso-style design library the built block is filed into (cells and
+  // what this run produces: "full" (default flow) or exactly one deliverable
+  // (schematic_only / symbol / veriloga / verilog / rnm)
+  deliverable: "full",
+  // Design library (library/cell/view structure) the built block is filed into (cells and
   // their views land in libraries/<library>/<cell>/, browsable from
   // xschem). The form requires a choice; existing libraries are offered
   // and a new one can be created inline.
   library: "",
+  // Existing cell of the chosen library to work on (its views get
+  // added/refreshed by the run); null = the run creates/names a new cell.
+  cell: null,
 };
 
-export default function SpecForm({ onSubmit, submitting, onArchChange, blockStates, settings }) {
+// `phyType` (2026-08-23): the PHY Type / Architecture pull-down moved up
+// into the top-level overview panel (App owns the choice, incl. the saved-
+// architecture "custom:" loads), so the form now receives the active
+// phy_type as a controlled prop and syncs its spec to it. `archVersion`
+// (arch-chat feature) bumps whenever the displayed architecture was edited
+// from outside the diagram (chat patch apply/undo, custom load) so the
+// diagram re-reads.
+export default function SpecForm({
+  onSubmit,
+  submitting,
+  onArchChange,
+  blockStates,
+  settings,
+  archVersion,
+  phyType = DEFAULTS.phy_type,
+}) {
   const [spec, setSpec] = useState(DEFAULTS);
+  // Follow the overview panel's PHY selector: a PHY switch invalidates the
+  // currently highlighted block (it belongs to the old architecture).
+  useEffect(() => {
+    setSpec((s) => (s.phy_type === phyType ? s : { ...s, phy_type: phyType, selected_block: null }));
+  }, [phyType]);
   const [topoGroups, setTopoGroups] = useState([]);
   const [customValue, setCustomValue] = useState("custom");
   const [customModels, setCustomModels] = useState(null); // applicability map for the free-text "custom" topology
@@ -131,8 +181,9 @@ export default function SpecForm({ onSubmit, submitting, onArchChange, blockStat
   // iverilog) - null until fetched; failure to fetch just means no inline
   // "unverified" warnings, not a broken form.
   const [toolchain, setToolchain] = useState(null);
-  // Design libraries for the library picker: existing names, plus inline
-  // new-library creation state.
+  // Design libraries for the library picker: full objects ({name, cells:
+  // [{name, topology, views}]}) so the cell picker can list a chosen
+  // library's cells; plus inline new-library creation state.
   const [libraries, setLibraries] = useState([]);
   const [libChoice, setLibChoice] = useState(""); // "" | existing name | NEW_LIBRARY
   const [newLibName, setNewLibName] = useState("");
@@ -154,7 +205,7 @@ export default function SpecForm({ onSubmit, submitting, onArchChange, blockStat
       .then(setToolchain)
       .catch(() => setToolchain(null));
     listLibraries()
-      .then((data) => setLibraries((data.libraries || []).map((l) => l.name)))
+      .then((data) => setLibraries(data.libraries || []))
       .catch(() => setLibraries([]));
   }, []);
 
@@ -165,9 +216,13 @@ export default function SpecForm({ onSubmit, submitting, onArchChange, blockStat
     setLibError(null);
     try {
       await createLibrary(name);
-      setLibraries((libs) => (libs.includes(name) ? libs : [...libs, name].sort()));
+      setLibraries((libs) =>
+        libs.some((l) => l.name === name)
+          ? libs
+          : [...libs, { name, cells: [] }].sort((a, b) => a.name.localeCompare(b.name))
+      );
       setLibChoice(name);
-      setSpec((s) => ({ ...s, library: name }));
+      setSpec((s) => ({ ...s, library: name, cell: null }));
       setNewLibName("");
     } catch (e) {
       setLibError(e instanceof Error ? e.message : String(e));
@@ -200,12 +255,69 @@ export default function SpecForm({ onSubmit, submitting, onArchChange, blockStat
     setSpec((s) => ({ ...s, [field]: value }));
   }
 
+  // Applicability map {type: true | "<reason>"} for an arbitrary topology
+  // value (the free-text custom topology has no option entry - its map is
+  // served separately). Null until /api/topologies has loaded.
+  function modelsForTopology(value) {
+    if (value === customValue) return customModels;
+    return topoGroups.flatMap((g) => g.options).find((o) => o.value === value)?.models || null;
+  }
+
+  // A model-only deliverable valid for the old topology may be inapplicable
+  // to the new one (which the backend would 422) - fall back to "full" then.
+  function nextDeliverable(current, topology) {
+    if (!MODEL_DELIVERABLES.includes(current)) return current;
+    const m = modelsForTopology(topology);
+    return m && m[current] === true ? current : "full";
+  }
+
   // Changing topology invalidates any topology-specific field values already
   // entered (a CTLE's peaking_db means nothing to a PLL), so clear them -
   // and clear the model checkboxes too (a type valid for the old topology
   // may be inapplicable to the new one, which the backend would 422).
   function updateTopology(topology) {
-    setSpec((s) => ({ ...s, topology, extra_fields: {}, models: [] }));
+    setSpec((s) => ({
+      ...s,
+      topology,
+      extra_fields: {},
+      models: [],
+      deliverable: nextDeliverable(s.deliverable, topology),
+      // A manually-changed topology invalidates a targeted existing cell
+      // (its views are for the previous topology) - back to "new cell".
+      cell: s.cell && cellFor(s.library, s.cell)?.topology !== topology ? null : s.cell,
+    }));
+  }
+
+  // The chosen library's cell list / one cell record, from the fetched
+  // library objects (empty until /api/libraries loads).
+  function cellsFor(library) {
+    return libraries.find((l) => l.name === library)?.cells || [];
+  }
+  function cellFor(library, cell) {
+    return cellsFor(library).find((c) => c.name === cell) || null;
+  }
+
+  // Picking an existing cell targets the run at it (views added/refreshed
+  // there) and pulls the form's topology from the cell's provenance so the
+  // spec matches what the cell is.
+  function handleCellChoice(name) {
+    if (!name) {
+      setSpec((s) => ({ ...s, cell: null }));
+      return;
+    }
+    const cellRec = cellFor(spec.library, name);
+    setSpec((s) => {
+      const topology = cellRec?.topology || s.topology;
+      const topologyChanged = topology !== s.topology;
+      return {
+        ...s,
+        cell: name,
+        topology,
+        extra_fields: topologyChanged ? {} : s.extra_fields,
+        models: topologyChanged ? [] : s.models,
+        deliverable: nextDeliverable(s.deliverable, topology),
+      };
+    });
   }
 
   function toggleModel(type) {
@@ -229,6 +341,8 @@ export default function SpecForm({ onSubmit, submitting, onArchChange, blockStat
         topology: block.topology,
         extra_fields: {},
         models: [],
+        deliverable: nextDeliverable(s.deliverable, block.topology),
+        cell: s.cell && cellFor(s.library, s.cell)?.topology !== block.topology ? null : s.cell,
       }));
     }
   }
@@ -291,13 +405,19 @@ export default function SpecForm({ onSubmit, submitting, onArchChange, blockStat
       temp_c: Number(spec.temp_c),
       corner: spec.corner,
       testbench_style: spec.testbench_style,
+      // Single-deliverable mode; the model checkboxes only apply to "full"
+      // runs (the form hides them otherwise, and the backend rejects the
+      // contradictory combination).
+      deliverable: spec.deliverable,
       // Behavioral models to generate (build-time only - App.jsx's research
       // subset deliberately omits this; Circuit_Researcher compares
       // topologies, it doesn't write models).
-      models: spec.models.length ? spec.models : null,
+      models: spec.deliverable === "full" && spec.models.length ? spec.models : null,
       // Design library the successful build is filed into (required by the
-      // form; the submit button stays disabled until one is chosen).
+      // form; the submit button stays disabled until one is chosen), plus
+      // the existing cell to file into when the user targeted one.
       library: spec.library || null,
+      cell: spec.cell || null,
     };
     if (isCurrentMirror) {
       payload.iref_ua = Number(spec.iref_ua);
@@ -324,21 +444,8 @@ export default function SpecForm({ onSubmit, submitting, onArchChange, blockStat
     <form className="spec-form" onSubmit={handleSubmit}>
       <h2>Circuit Spec</h2>
 
-      <label>
-        PHY Type
-        <select
-          value={spec.phy_type}
-          onChange={(e) => setSpec((s) => ({ ...s, phy_type: e.target.value, selected_block: null }))}
->
-          <option value="ser-des">SerDes (Serializer/Deserializer)</option>
-          <option value="ddr">DDR (Double Data Rate Memory)</option>
-          <option value="lpddr">LPDDR (Low-Power DDR Memory)</option>
-          <option value="hbm">HBM (High-Bandwidth Memory)</option>
-          <option value="optical">Optical (Optical Communication)</option>
-          <option value="die-to-die">Die-to-Die (Chiplet Interconnect)</option>
-        </select>
-      </label>
-
+      {/* The PHY Type / Architecture pull-down lives in the top-level
+          "PHY architecture" overview panel now (App.jsx / PhyTypeSelect). */}
       <PhyArchitectureSelector
         phy_type={spec.phy_type}
         selectedBlock={spec.selected_block}
@@ -348,6 +455,18 @@ export default function SpecForm({ onSubmit, submitting, onArchChange, blockStat
           .flatMap((g) => g.options)
           .map((o) => ({ value: o.value, label: o.label }))}
         onSelect={handleBlockSelected}
+        archVersion={archVersion}
+      />
+
+      {/* Generate menu underneath the architecture pane (user request):
+          behavioral model of the entire diagram or of chosen blocks. */}
+      <ArchGenerateMenu
+        phyType={spec.phy_type}
+        archVersion={archVersion}
+        modelsForTopology={modelsForTopology}
+        libraries={libraries}
+        submitting={submitting}
+        onSubmit={onSubmit}
       />
 
       <label>
@@ -427,27 +546,57 @@ export default function SpecForm({ onSubmit, submitting, onArchChange, blockStat
       {hasTopology && (
         <div className="library-picker">
           <label>
-            Design library (like a Virtuoso library - the built cell and its views are filed here)
+            Design library (the built cell and its views are filed here)
             <select
               value={libChoice}
               onChange={(e) => {
                 const v = e.target.value;
                 setLibChoice(v);
                 setLibError(null);
-                setSpec((s) => ({ ...s, library: v === NEW_LIBRARY ? "" : v }));
+                setSpec((s) => ({ ...s, library: v === NEW_LIBRARY ? "" : v, cell: null }));
               }}
             >
               <option value="" disabled>
                 Select a library...
               </option>
-              {libraries.map((name) => (
-                <option key={name} value={name}>
-                  {name}
+              {libraries.map((l) => (
+                <option key={l.name} value={l.name}>
+                  {l.name}
+                  {l.cells?.length ? ` (${l.cells.length} cell${l.cells.length > 1 ? "s" : ""})` : ""}
                 </option>
               ))}
               <option value={NEW_LIBRARY}>+ Create new library...</option>
             </select>
           </label>
+          {spec.library && libChoice !== NEW_LIBRARY && (
+            <div className="cell-picker">
+              <label>
+                Cell (work on an existing cell's views, or generate a new one)
+                <select value={spec.cell ?? ""} onChange={(e) => handleCellChoice(e.target.value)}>
+                  <option value="">+ Generate a new cell</option>
+                  {cellsFor(spec.library).map((c) => (
+                    <option key={c.name} value={c.name}>
+                      {c.name}
+                      {c.topology ? ` — ${c.topology}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {spec.cell && cellFor(spec.library, spec.cell) && (
+                <p className="hint cell-views-hint">
+                  Existing views of <code>{spec.cell}</code>:{" "}
+                  {[...new Set(
+                    (cellFor(spec.library, spec.cell).views || [])
+                      .map((v) => v.kind)
+                      .filter((k) => !["provenance", "log", "other"].includes(k))
+                  )].join(", ") || "none"}
+                  . The Generate mode below adds or refreshes this cell's views (a full run
+                  refreshes schematic/netlist/measurements; symbol/model modes touch only
+                  their own view).
+                </p>
+              )}
+            </div>
+          )}
           {libChoice === NEW_LIBRARY && (
             <div className="field-row new-library-row">
               <label>
@@ -704,7 +853,7 @@ export default function SpecForm({ onSubmit, submitting, onArchChange, blockStat
         option also gives you a testbench schematic you can open and edit in the GUI.
       </p>
 
-      {currentModels && (
+      {currentModels && spec.deliverable === "full" && (
         <fieldset className="models-group">
           <legend>Behavioral models (optional)</legend>
           <p className="hint">
@@ -738,15 +887,69 @@ export default function SpecForm({ onSubmit, submitting, onArchChange, blockStat
         </fieldset>
       )}
 
+      <label className="generate-mode">
+        Generate
+        <select
+          value={spec.deliverable}
+          onChange={(e) => update("deliverable", e.target.value)}
+        >
+          {DELIVERABLE_OPTIONS.map((opt) => {
+            const applicable = !opt.model || (currentModels && currentModels[opt.model] === true);
+            const reason = opt.model && currentModels && currentModels[opt.model] !== true
+              ? currentModels[opt.model]
+              : null;
+            return (
+              <option key={opt.value} value={opt.value} disabled={!applicable} title={reason || undefined}>
+                {opt.label}
+                {!applicable ? " — not applicable to this topology" : ""}
+              </option>
+            );
+          })}
+        </select>
+      </label>
+      {(() => {
+        // Ineligible model options render disabled in the dropdown above;
+        // their applicability reasons (the same strings the checkboxes use)
+        // are listed compactly here so a disabled option is explained even
+        // where <option title> tooltips don't show.
+        const disabledOptions = DELIVERABLE_OPTIONS.filter(
+          (o) => o.model && currentModels && currentModels[o.model] !== true
+        );
+        if (spec.deliverable === "full") {
+          return disabledOptions.length > 0 ? (
+            <p className="model-disabled-reason generate-disabled-reasons">
+              {disabledOptions
+                .map((o) => `${o.label.replace(" only", "")} is disabled for this topology`)
+                .join("; ")}{" "}
+              — reasons under the model checkboxes below.
+            </p>
+          ) : null;
+        }
+        const toolWarning = MODEL_DELIVERABLES.includes(spec.deliverable)
+          ? modelToolWarning(spec.deliverable, toolchain)
+          : null;
+        return (
+          <>
+            <p className="hint">
+              {spec.deliverable === "schematic_only"
+                ? "Schematic-only run: designs the circuit and produces the xschem schematic, netlist and rendered PNG. Skips the verification simulation suite (a quick DC sanity check only) and behavioral models."
+                : spec.deliverable === "symbol"
+                ? "Symbol-only run: just the xschem .sym for this block (pins from the filed library schematic if the cell exists, else from the spec). Cheap and fast - runs directly, no research step, no simulations."
+                : "Model-only run: generates just this behavioral model from the spec (no transistor-level design), verified with the local toolchain. Cheap and fast - runs directly, no research step."}
+            </p>
+            {toolWarning && <p className="field-warning">{toolWarning}</p>}
+          </>
+        );
+      })()}
+
       {!spec.library && (
         <p className="hint">Choose (or create) a design library above to enable the build.</p>
       )}
       <button type="submit" disabled={submitting || !spec.library}>
         {submitting
           ? "Working..."
-          : isCurrentMirror
-          ? "Build current mirror"
-          : "Research topology options"}
+          : SUBMIT_LABELS[spec.deliverable] ||
+            (isCurrentMirror ? "Build current mirror" : "Research topology options")}
       </button>
       {settings?.derived?.runs && (
         <p className="hint runs-root-hint">

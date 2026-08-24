@@ -1,0 +1,189 @@
+{
+  "name": "optical-rx-if",
+  "phy_type": "optical",
+  "clock_domains": [
+    {
+      "name": "clk_ref",
+      "freq_mhz": 100,
+      "owner": "external",
+      "source_block": null,
+      "description": "Board reference. PLL input; CSR/host + cal/link FSM domain."
+    },
+    {
+      "name": "clk_rx_word",
+      "freq_mhz": 100,
+      "owner": "afe",
+      "source_block": "optical-cdr",
+      "description": "CDR-recovered word clock (line/16). Plesiochronous to clk_ref -> elastic FIFO in the digital datapath."
+    }
+  ],
+  "signals": [
+    {
+      "name": "rx_pdata",
+      "direction": "a2d",
+      "width": 16,
+      "clock_domain": "clk_rx_word",
+      "rate": "word",
+      "rate_mhz": 100,
+      "group": "data",
+      "handshake": "none",
+      "afe_block": "optical-slicer",
+      "digital_block": "rx-align",
+      "meaning": "Deserialized parallel data. Garbage until cdr_locked and while los is asserted."
+    },
+    {
+      "name": "tia_offset_code",
+      "direction": "d2a",
+      "width": 6,
+      "clock_domain": "clk_ref",
+      "rate": "quasi_static",
+      "rate_mhz": null,
+      "group": "control",
+      "handshake": "level",
+      "afe_block": "tia",
+      "digital_block": "cal",
+      "meaning": "TIA output-offset trim (photodiode dark-current compensation). Change only while cal_hold=1."
+    },
+    {
+      "name": "la_gain_code",
+      "direction": "d2a",
+      "width": 5,
+      "clock_domain": "clk_ref",
+      "rate": "quasi_static",
+      "rate_mhz": null,
+      "group": "control",
+      "handshake": "level",
+      "afe_block": "limiting-amp",
+      "digital_block": "cal",
+      "meaning": "Limiting-amp/VGA gain code from the calibration engine."
+    },
+    {
+      "name": "cal_hold",
+      "direction": "d2a",
+      "width": 1,
+      "clock_domain": "clk_ref",
+      "rate": "quasi_static",
+      "rate_mhz": null,
+      "group": "control",
+      "handshake": "level",
+      "afe_block": "tia",
+      "digital_block": "cal",
+      "meaning": "Freeze AFE-internal offset servo while digital rewrites trim codes."
+    },
+    {
+      "name": "los",
+      "direction": "a2d",
+      "width": 1,
+      "clock_domain": "async",
+      "rate": "async_event",
+      "rate_mhz": null,
+      "group": "status",
+      "handshake": "2ff_sync",
+      "afe_block": "limiting-amp",
+      "digital_block": "train",
+      "meaning": "Loss of signal (optical input below threshold). Forces the link FSM out of ACTIVE. Synchronized into clk_ref."
+    },
+    {
+      "name": "cdr_locked",
+      "direction": "a2d",
+      "width": 1,
+      "clock_domain": "async",
+      "rate": "async_event",
+      "rate_mhz": null,
+      "group": "status",
+      "handshake": "2ff_sync",
+      "afe_block": "optical-cdr",
+      "digital_block": "train",
+      "meaning": "CDR lock indication; gates word alignment start. Synchronized into clk_ref."
+    },
+    {
+      "name": "rstn_por",
+      "direction": "ext",
+      "width": 1,
+      "clock_domain": "async",
+      "rate": "async_event",
+      "rate_mhz": null,
+      "group": "reset",
+      "handshake": "2ff_sync",
+      "afe_block": null,
+      "digital_block": "train",
+      "meaning": "Chip POR, async assert; release synchronized per domain."
+    },
+    {
+      "name": "en_rx",
+      "direction": "d2a",
+      "width": 1,
+      "clock_domain": "clk_ref",
+      "rate": "quasi_static",
+      "rate_mhz": null,
+      "group": "power",
+      "handshake": "level",
+      "afe_block": "tia",
+      "digital_block": "train",
+      "meaning": "RX chain enable (TIA/CTLE/LA/slicer/CDR)."
+    }
+  ],
+  "cdc_points": [
+    {
+      "signal": "rx_pdata",
+      "from_domain": "clk_rx_word",
+      "to_domain": "clk_ref",
+      "strategy": "async_fifo",
+      "notes": "Elastic FIFO in the digital datapath; absorbs the plesiochronous ppm offset."
+    },
+    {
+      "signal": "los",
+      "from_domain": "async",
+      "to_domain": "clk_ref",
+      "strategy": "2ff",
+      "notes": "Level signal; 2-flop synchronizer."
+    },
+    {
+      "signal": "cdr_locked",
+      "from_domain": "async",
+      "to_domain": "clk_ref",
+      "strategy": "2ff",
+      "notes": "Level signal; 2-flop synchronizer."
+    }
+  ],
+  "reset_sequence": [
+    {
+      "step": 1,
+      "action": "POR asserts asynchronously; all enables cleared, trim codes to defaults",
+      "signal": "rstn_por",
+      "wait_for": "-"
+    },
+    {
+      "step": 2,
+      "action": "POR release synchronized into each domain (2ff per domain)",
+      "signal": "rstn_por",
+      "wait_for": "2 clocks per domain"
+    }
+  ],
+  "power_sequence": [
+    {
+      "step": 1,
+      "action": "POR released, all enables 0",
+      "signal": "rstn_por",
+      "wait_for": "-"
+    },
+    {
+      "step": 2,
+      "action": "Enable RX chain (en_rx=1)",
+      "signal": "en_rx",
+      "wait_for": "10 us settle"
+    },
+    {
+      "step": 3,
+      "action": "Run TIA offset / LA gain calibration under cal_hold",
+      "signal": "cal_hold",
+      "wait_for": "cal engine done"
+    },
+    {
+      "step": 4,
+      "action": "Wait for signal + CDR lock, then start word alignment",
+      "signal": null,
+      "wait_for": "los deasserted AND cdr_locked (timeout 1 ms -> retry)"
+    }
+  ]
+}

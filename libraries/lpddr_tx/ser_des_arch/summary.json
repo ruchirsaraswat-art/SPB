@@ -1,0 +1,15 @@
+{
+  "status": "success",
+  "error": "",
+  "deliverable": "arch_model",
+  "model_type": "rnm",
+  "cell": "ser_des_arch",
+  "top_file": "ser_des_arch_rnm.sv",
+  "block_files": {"tx-ffe": "tx_ffe_rnm.sv"},
+  "testbench_file": "ser_des_arch_tb.sv",
+  "sim_log_file": "arch_sim.log",
+  "model_status": "verified",
+  "status_reason": "",
+  "blocks_included": ["tx-ffe"],
+  "notes": "Defaults: 10 Gb/s chain rate (UI = 100 ps bit clock), real +/-1.0 NRZ data convention, 3-tap TX FFE with taps {-0.10, 0.75, -0.15} (pre/main/post, sum(|tap|)=1.0 for normalized swing). Block topology is 'ffe' so only the FFE half of the catalog blurb is modeled (DFE/comparator belongs to an RX equalizer not in this run's selection). Wiring: only one block included and no inter-block edges, so its natural ports are exposed at the top level; the UI bit clock, which the serializer/PLL would supply in the full diagram, is exposed as top-level input bit_clk (documented judgment call). Icarus 12 rejects unpacked-array module parameters, so the real taps[] array is initialized at time 0 from scalar real parameters TAP_PRE/TAP_MAIN/TAP_POST. TB is self-checking (impulse tap read-back exact to 1e-9, DC step = sum(taps) both polarities) with the mandatory watchdog."
+}

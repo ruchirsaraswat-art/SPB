@@ -340,7 +340,7 @@ button:disabled {
   color: #60a5fa;
 }
 
-/* Virtuoso-style design-library picker on the spec form. */
+/* Design-library picker on the spec form. */
 .library-picker {
   border: 1px solid #2a2f3a;
   border-radius: 8px;
@@ -404,6 +404,100 @@ button:disabled {
   font-size: 0.78rem;
   color: #6b7280;
   margin: 2px 0 0 24px;
+}
+
+/* Generate dropdown (single-deliverable modes) + its inline reasons. */
+.generate-mode {
+  margin-top: 14px;
+}
+
+/* Generate-architecture-model menu underneath the diagram pane. */
+.arch-generate-menu {
+  background: #171a21;
+  border: 1px solid #2a2f3a;
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin: 0 0 16px;
+}
+
+.arch-generate-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.arch-generate-head .toggle-raw {
+  margin-top: 0;
+}
+
+.arch-generate-body {
+  margin-top: 8px;
+}
+
+.arch-generate-blocks {
+  margin: 6px 0;
+  padding: 8px 10px;
+  background: #1c1f28;
+  border: 1px solid #2a2f3a;
+  border-radius: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+/* Stitch placement rows: block label + its source-cell dropdown. */
+.stitch-placement-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 4px 0;
+}
+
+.stitch-placement-row select {
+  flex: 0 1 60%;
+}
+
+/* Library cell picker (work on an existing cell vs generate a new one). */
+.cell-picker {
+  margin-top: 8px;
+}
+
+.cell-views-hint {
+  margin-top: 4px;
+}
+
+.generate-disabled-reasons {
+  margin: 4px 0 0;
+}
+
+/* Deliverable-mode badge next to the ResultsView heading ("Symbol only",
+   "RNM model only · light run", ...). */
+.deliverable-badge {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 3px 10px;
+  border-radius: 10px;
+  border: 1px solid #3b82f6;
+  color: #93c5fd;
+  background: #172033;
+  margin-left: 12px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+/* Symbol-only run result section. */
+.symbol-block {
+  background: #1c1f28;
+  border: 1px solid #2a2f3a;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin: 10px 0;
+}
+
+.symbol-block a {
+  color: #60a5fa;
 }
 
 /* Behavioral-model rows in ResultsView. */
@@ -834,4 +928,1139 @@ button:disabled {
 }
 .runs-root-hint {
   word-break: break-all;
+}
+
+/* Architecture-discussion chat sidebar (drawing tab): 25% of the drawing
+   area's width next to the form+diagram (75%), sticky/full viewport height,
+   collapsible to a slim header. Contract:
+   audits/2026-08-21-arch-chat-feature.md. */
+.drawing-with-chat {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.drawing-main {
+  flex: 1 1 75%;
+  min-width: 0;
+}
+
+/* Right column (user request): the architecture chat on top with the
+   schematic sub-window kept UNDERNEATH it. The column itself is sticky and
+   scrolls internally; the chat's own height is capped so the schematic
+   actually shows below it instead of being pushed off screen. */
+.drawing-side {
+  flex: 0 0 25%;
+  min-width: 0;
+  position: sticky;
+  top: 12px;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.drawing-side .arch-chat-panel {
+  position: static;
+  flex: 0 0 auto;
+  max-height: 55vh;
+  width: auto;
+  margin-bottom: 16px;
+}
+
+.drawing-side .schematic-panel-slot {
+  position: static;
+}
+
+.drawing-side .schematic-panel {
+  margin-bottom: 0;
+}
+
+.arch-chat-panel {
+  flex: 0 0 25%;
+  min-width: 0;
+  background: #171a21;
+  border: 1px solid #2a2f3a;
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 24px;
+  position: sticky;
+  top: 12px;
+  max-height: calc(100vh - 24px);
+  display: flex;
+  flex-direction: column;
+}
+
+.arch-chat-panel.collapsed {
+  flex: 0 0 auto;
+  position: sticky;
+}
+
+.arch-chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.arch-chat-head h3 {
+  margin: 0;
+  font-size: 1rem;
+  white-space: nowrap;
+}
+
+.arch-chat-head .collapse-btn {
+  margin-top: 0;
+  font-size: 0.8rem;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
+.arch-chat-hint {
+  margin: 8px 0 0;
+}
+
+.arch-chat-transcript {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  margin: 12px 0 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 180px;
+}
+
+.chat-empty {
+  color: #8892a0;
+  font-size: 0.85rem;
+  border: 1px dashed #333a48;
+  border-radius: 8px;
+  padding: 16px 12px;
+  text-align: center;
+}
+
+.chat-bubble {
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  max-width: 96%;
+}
+
+.chat-bubble p {
+  margin: 6px 0;
+}
+
+.chat-bubble ul {
+  margin: 6px 0;
+  padding-left: 18px;
+}
+
+.chat-bubble.user {
+  background: #1e2a45;
+  border: 1px solid #3b82f6;
+  align-self: flex-end;
+}
+
+.chat-bubble.assistant {
+  background: #1c1f28;
+  border: 1px solid #2a2f3a;
+  align-self: flex-start;
+}
+
+/* Failed turn (e.g. 502 consultant timeout/CLI error): inline error bubble;
+   the typed message stays in the input for retry. */
+.chat-bubble.error {
+  background: #2a1215;
+  border-left: 3px solid #dc2626;
+  color: #fca5a5;
+  align-self: stretch;
+  border-radius: 4px;
+  white-space: pre-wrap;
+}
+
+.chat-heading {
+  font-weight: 600;
+  color: #e6e6e6;
+}
+
+.chat-code {
+  background: #0f1115;
+  border: 1px solid #333a48;
+  border-radius: 6px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  font-size: 0.78rem;
+  margin: 6px 0;
+}
+
+.chat-meta {
+  color: #8892a0;
+  font-size: 0.72rem;
+  margin-top: 4px;
+}
+
+/* Proposed-patch card inside an assistant bubble */
+.chat-patch-card {
+  background: #101726;
+  border: 1px solid #3b82f6;
+  border-radius: 8px;
+  padding: 8px 12px 10px;
+  margin-top: 8px;
+  font-size: 0.82rem;
+}
+
+.chat-patch-card.invalid {
+  border-color: #d97706;
+}
+
+.chat-patch-ops {
+  margin: 6px 0;
+  padding-left: 18px;
+}
+
+.chat-patch-ops .op-error {
+  color: #fca5a5;
+}
+
+.chat-patch-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.chat-patch-actions button {
+  font-size: 0.8rem;
+  padding: 6px 14px;
+  margin-top: 4px;
+}
+
+.chat-patch-state {
+  color: #8892a0;
+  font-size: 0.78rem;
+  margin: 4px 0 0;
+}
+
+.chat-pending {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #8892a0;
+  font-size: 0.85rem;
+}
+
+.chat-pending .spinner {
+  width: 16px;
+  height: 16px;
+  border-width: 2px;
+  margin-top: 0;
+}
+
+.arch-chat-input {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.arch-chat-input textarea {
+  flex: 1;
+  resize: vertical;
+  background: #0f1115;
+  border: 1px solid #333a48;
+  color: #e6e6e6;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-family: inherit;
+  min-height: 40px;
+}
+
+.arch-chat-input button {
+  padding: 8px 14px;
+  font-size: 0.9rem;
+}
+
+.arch-chat-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.arch-chat-actions .toggle-raw {
+  margin-top: 6px;
+  font-size: 0.8rem;
+  padding: 6px 10px;
+}
+
+@media (max-width: 1100px) {
+  .drawing-with-chat {
+    flex-direction: column;
+  }
+  .drawing-side {
+    position: static;
+    max-height: none;
+    overflow-y: visible;
+    flex: 1 1 auto;
+    width: 100%;
+  }
+  .arch-chat-panel {
+    position: static;
+    max-height: 480px;
+    flex: 1 1 auto;
+    width: 100%;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Three-panel workbench (2026-08-23 digital-arch spec, section d; layout
+   revised per user request the same day): AFE architecture, digital
+   architecture and the AFE<->digital interface stacked ONE BELOW THE OTHER
+   at full width. Each panel minimizes individually to its header bar
+   (Minimize/Expand button); clicking a header focuses the panel - the chat
+   sidebar follows the focused one, marked by an accent border. */
+
+.workbench {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.workspace-panel {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  margin-bottom: 0;
+  /* Overview-block navigation scrolls panels into view (scrollIntoView,
+     block: "start"); this keeps the panel title clear of the viewport edge
+     / any sticky bar above. */
+  scroll-margin-top: 14px;
+}
+
+.workspace-panel.focused {
+  border-color: #4a6ab0;
+}
+
+.workspace-panel.minimized {
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+.workspace-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  border-bottom: 1px solid #2a2f3a;
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+}
+
+.workspace-panel.minimized .workspace-head {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.workspace-head h2 {
+  margin: 0;
+  font-size: 1.02rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workspace-head-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.workspace-focus-hint {
+  font-size: 0.72rem;
+  color: #8b93a7;
+}
+
+.workspace-focus-hint.focused-hint {
+  color: #7fa3e8;
+}
+
+.workspace-min-btn {
+  font-size: 0.72rem;
+  padding: 3px 8px;
+}
+
+/* Top-level PHY architecture overview: [line] <-> AFE <-> IF <-> Controller
+   <-> [core]. Navigational only - its header does not take chat focus. */
+.overview-head {
+  cursor: default;
+}
+
+/* Left cluster of the overview panel header: the title plus the PHY Type /
+   Architecture pull-down (moved here from the spec form - it re-targets all
+   three workspaces, and staying in the header keeps it reachable when the
+   overview panel is minimized). */
+.overview-head-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.phy-type-select {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: #8b93a7;
+  white-space: nowrap;
+}
+
+.phy-type-select select {
+  background: #0f1115;
+  border: 1px solid #333a48;
+  color: #e6e6e6;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  max-width: 320px;
+}
+
+.phy-overview-row {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.phy-overview-ext {
+  display: flex;
+  align-items: center;
+  text-align: center;
+  padding: 8px 12px;
+  border: 1px dashed #3a4152;
+  border-radius: 8px;
+  color: #8b93a7;
+  font-size: 0.78rem;
+}
+
+.phy-overview-wire {
+  align-self: center;
+  color: #4a5266;
+  font-size: 1.1rem;
+}
+
+.phy-overview-block,
+.phy-overview-iface {
+  flex: 1 1 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+  text-align: left;
+  padding: 10px 14px;
+  background: #1b2029;
+  border: 1px solid #2f3648;
+  border-radius: 10px;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+.phy-overview-iface {
+  flex: 0 1 150px;
+  align-items: center;
+  text-align: center;
+  background: #171c26;
+  border-style: dashed;
+}
+
+.phy-overview-block strong,
+.phy-overview-iface strong {
+  font-size: 0.95rem;
+}
+
+.phy-overview-block span,
+.phy-overview-iface span {
+  font-size: 0.72rem;
+  color: #8b93a7;
+}
+
+.phy-overview-block:hover,
+.phy-overview-iface:hover {
+  border-color: #4a6ab0;
+}
+
+.phy-overview-block.active,
+.phy-overview-iface.active {
+  border-color: #4a6ab0;
+  box-shadow: 0 0 0 1px #4a6ab0 inset;
+}
+
+/* Firmware block in the overview chain: SOFTWARE, not another hardware
+   stage - distinct (warm) fill + dashed border + a small "SW" tag. */
+.phy-overview-firmware {
+  background: #241f17;
+  border-style: dashed;
+  border-color: #6b5a33;
+}
+
+.phy-overview-sw-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid #b08d3f;
+  border-radius: 4px;
+  color: #d9b45c;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  vertical-align: 2px;
+}
+
+.phy-overview-caption {
+  margin: 8px 0 0;
+  color: #8b93a7;
+  font-size: 0.74rem;
+  font-style: italic;
+}
+
+/* --------------------------------------------------------------------------
+   Firmware workspace panel: the "Generate register layer" action + its
+   results view (compile/test status badges, file list, log tail). */
+
+.fw-generate {
+  margin-top: 12px;
+  border-top: 1px solid #2f3648;
+  padding-top: 10px;
+}
+
+.fw-generate-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.fw-generate-btn {
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  background: #3b2f14;
+  border: 1px solid #b08d3f;
+  border-radius: 8px;
+  color: #f0d9a0;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.fw-generate-btn:hover:not(:disabled) {
+  background: #4a3b19;
+}
+
+.fw-generate-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.fw-generate-confirm {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 8px 12px;
+  background: #241f17;
+  border: 1px dashed #6b5a33;
+  border-radius: 8px;
+  font-size: 0.85rem;
+}
+
+.fw-generate-pending {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: #d9b45c;
+  font-size: 0.85rem;
+}
+
+.fw-generate-error {
+  margin-top: 10px;
+}
+
+.fw-result {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #2f3648;
+  background: #171c26;
+}
+
+.fw-result.pass {
+  border-color: #2f6b45;
+}
+
+.fw-result.fail {
+  border-color: #8a3535;
+}
+
+.fw-result-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.fw-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.fw-badge.sub {
+  font-weight: 500;
+  font-size: 0.74rem;
+}
+
+.fw-badge.pass {
+  background: #14301f;
+  border: 1px solid #2f6b45;
+  color: #7fd8a0;
+}
+
+.fw-badge.fail {
+  background: #331616;
+  border: 1px solid #8a3535;
+  color: #f0a0a0;
+}
+
+.fw-result-meta {
+  margin-left: auto;
+  color: #8b93a7;
+  font-size: 0.78rem;
+}
+
+.fw-result-reason {
+  margin: 8px 0 0;
+  color: #f0a0a0;
+  font-size: 0.82rem;
+  white-space: pre-wrap;
+}
+
+.fw-file-list {
+  margin: 8px 0;
+  padding-left: 18px;
+  font-size: 0.8rem;
+  columns: 2;
+}
+
+.fw-file-list li {
+  margin: 2px 0;
+}
+
+.fw-test-output {
+  margin-top: 8px;
+  max-height: 320px;
+  overflow: auto;
+  background: #0f1115;
+  border: 1px solid #2f3648;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 0.72rem;
+  white-space: pre-wrap;
+}
+
+/* --------------------------------------------------------------------------
+   Interface table editor (middle workspace). Same visual language as the
+   spec form: dark panel, slim inputs, amber soft warnings; hard errors red. */
+
+.if-editor {
+  min-width: 0;
+}
+
+.if-toolbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.if-name-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.8rem;
+  color: #8b93a7;
+}
+
+.if-name-label input {
+  width: 180px;
+}
+
+.if-toolbar-buttons {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.if-section-head {
+  margin: 16px 0 6px;
+  font-size: 0.92rem;
+  color: #c9d1e3;
+  border-bottom: 1px solid #2a2f3a;
+  padding-bottom: 4px;
+}
+
+.if-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 8px 0 4px;
+}
+
+.if-group-name {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #8b93a7;
+}
+
+.if-table {
+  /* display:block gives each table its own horizontal scrollbar when the
+     workspace panel is narrower than the column set - inputs keep readable
+     widths instead of being crushed. */
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  margin-bottom: 4px;
+}
+
+.if-table th {
+  text-align: left;
+  font-weight: 500;
+  color: #8b93a7;
+  font-size: 0.72rem;
+  padding: 3px 4px;
+  border-bottom: 1px solid #2a2f3a;
+  white-space: nowrap;
+}
+
+.if-table td {
+  padding: 2px 4px;
+  vertical-align: middle;
+}
+
+.if-table input,
+.if-table select {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 0.8rem;
+  padding: 3px 5px;
+}
+
+.if-table select {
+  width: auto;
+  max-width: 130px;
+}
+
+.if-table input.if-in-num {
+  width: 60px;
+}
+
+.if-table input.if-in-name {
+  min-width: 116px;
+}
+
+.if-table input.if-in-block {
+  min-width: 92px;
+}
+
+.if-table input.if-in-meaning {
+  min-width: 200px;
+}
+
+.if-width-hint {
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+.if-del {
+  color: #e46a6a;
+}
+
+.if-step-num {
+  color: #8b93a7;
+  text-align: center;
+}
+
+.if-seq-actions {
+  white-space: nowrap;
+}
+
+.if-seq-actions .toggle-raw {
+  padding: 2px 6px;
+  margin-left: 2px;
+}
+
+/* Inline validation rows: hard errors red, soft warnings amber - the same
+   non-blocking language the spec form's sky130 warnings use. */
+.if-issue-row td {
+  padding: 0 4px 4px;
+}
+
+.if-error {
+  display: block;
+  color: #e46a6a;
+  font-size: 0.75rem;
+}
+
+.if-warning {
+  display: block;
+  color: #d9a441;
+  font-size: 0.75rem;
+}
+
+.if-load-list {
+  background: #171a21;
+  border: 1px solid #2a2f3a;
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  font-size: 0.85rem;
+}
+
+.if-load-list ul {
+  margin: 6px 0;
+  padding-left: 16px;
+}
+
+.if-raw-json {
+  max-height: 320px;
+  overflow: auto;
+  background: #10131a;
+  border: 1px solid #2a2f3a;
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 0.72rem;
+}
+
+/* Digital architecture panel: same diagram renderer as the AFE view, with a
+   subtle teal canvas accent (blocks in the SVG carry the teal/indigo digital
+   palette) so the two diagram views are instantly tellable apart. */
+.digital-arch-panel .arch-diagram-scroll {
+  border-color: #0d9488;
+  background: #f7fdfc;
+}
+
+/* Firmware architecture diagram: amber/orange accent (software control plane) -
+   warm canvas tint + border matching the amber SVG block palette, so the
+   AFE (grey/status), digital (teal) and firmware (amber) views are instantly
+   tellable apart. Keyed on the data-variant hook, not the panel class. */
+.arch-diagram[data-variant="firmware"] .arch-diagram-scroll {
+  border-color: #d97706;
+  background: #fffdf4;
+}
+
+/* Soft per-PHY applicability note on digital chat patch ops. */
+.op-warning {
+  color: #d9a441;
+  font-size: 0.78rem;
+}
+
+/* ------------------------------------------------------------------------
+   Spec-document intake + RTL generation (2026-08-23 rtl-gen spec) */
+
+.rtl-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.rtl-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rtl-controller-btn {
+  background: #1c2a2e;
+  border: 1px solid #2d6b5a;
+  color: #7dd8b9;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.rtl-controller-btn:hover:not(:disabled) {
+  background: #21363a;
+}
+
+.spec-docs-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 8px 0;
+  padding: 10px 14px;
+  background: #1b2130;
+  border: 1px solid #3b4a6b;
+  border-radius: 8px;
+  font-size: 0.85rem;
+}
+
+.spec-docs-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.spec-docs-dismiss {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.spec-docs-manager {
+  margin: 8px 0;
+  padding: 12px 14px;
+  background: #161b25;
+  border: 1px solid #2a3350;
+  border-radius: 8px;
+  font-size: 0.85rem;
+}
+
+.spec-docs-manager-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.spec-docs-manager-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.spec-doc-row {
+  border-top: 1px solid #232b40;
+  padding: 8px 0;
+}
+
+.spec-doc-row-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.spec-doc-meta {
+  color: #8b93a7;
+  font-size: 0.8rem;
+}
+
+.spec-doc-add-form,
+.spec-doc-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.spec-doc-section-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 4px 0;
+}
+
+.spec-doc-section-row input[type="text"] {
+  flex: 1;
+  min-width: 160px;
+}
+
+.spec-doc-ws-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.78rem;
+  color: #a8b0c2;
+}
+
+.spec-doc-ws-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.spec-doc-form-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.spec-chip {
+  display: inline-block;
+  margin: 0 3px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #22304a;
+  border: 1px solid #3b4a6b;
+  color: #9db4e0;
+  font-size: 0.75rem;
+}
+
+.rtl-block-menu {
+  margin-top: 10px;
+}
+
+.rtl-fields-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px 14px;
+  margin: 8px 0;
+}
+
+.rtl-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.8rem;
+}
+
+.rtl-field-unit {
+  color: #8b93a7;
+}
+
+.rtl-field-required {
+  color: #d9b45c;
+}
+
+.rtl-missing-fields {
+  margin: 6px 0;
+}
+
+.rtl-generate-btn {
+  background: #1c2a2e;
+  border: 1px solid #2d6b5a;
+  color: #7dd8b9;
+  border-radius: 6px;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+
+.rtl-generate-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.rtl-controller-card {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+  width: min(560px, 90vw);
+  padding: 12px 16px;
+  background: #161b25;
+  border: 1px solid #2d6b5a;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.rtl-toolbar-actions {
+  position: relative;
+}
+
+.rtl-cost-line {
+  padding: 8px 10px;
+  background: #2b2214;
+  border: 1px solid #7a5c1e;
+  border-radius: 8px;
+  color: #e8c87a;
+}
+
+.rtl-controller-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.rtl-library-row {
+  align-items: flex-end;
+}
+
+/* RTL results section */
+
+.results-view.partial {
+  border-color: #7a5c1e;
+}
+
+.partial-badge {
+  background: #2b2214;
+  border-color: #7a5c1e;
+  color: #e8c87a;
+}
+
+.rtl-section {
+  margin: 14px 0;
+}
+
+.rtl-result-row {
+  border-top: 1px solid #232b40;
+  padding: 8px 0;
+}
+
+.rtl-result-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.rtl-downgrade {
+  color: #f0a0a0;
+}
+
+.rtl-checks {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 6px 0;
+}
+
+.rtl-check {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  border: 1px solid #2a2f3a;
+}
+
+.rtl-check.ok {
+  background: #12241a;
+  border-color: #1f5c3a;
+  color: #7dd8a0;
+}
+
+.rtl-check.bad {
+  background: #2b1414;
+  border-color: #7f1d1d;
+  color: #f0a0a0;
+}
+
+.rtl-filed code {
+  margin-right: 8px;
 }

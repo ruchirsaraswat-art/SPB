@@ -1,0 +1,15 @@
+{
+  "status": "success",
+  "error": "",
+  "deliverable": "arch_model",
+  "model_type": "rnm",
+  "cell": "rx_eq_arch",
+  "top_file": "rx_eq_arch_rnm.sv",
+  "block_files": {"rx-eq": "rx_eq_rnm.sv"},
+  "testbench_file": "rx_eq_arch_tb.sv",
+  "sim_log_file": "arch_sim.log",
+  "model_status": "verified",
+  "status_reason": "",
+  "blocks_included": ["rx-eq"],
+  "notes": "No specs given; judgment defaults for a generic 10 Gb/s PHY: DC gain 12 dB (x4), dominant pole 5 GHz (= Nyquist, so the pole-frequency check doubles as the Nyquist aliasing check), saturation +/-0.9 V (half of 1.8 V supply), internal sample tick 5 ps = 1/(40*f_pole) = 0.05 UI. Topology 'ctle' so no VGA gain-code port and voltage input (not TIA current); CTLE peaking zero and DFE taps not modeled (not exercised by this run's checks). Single block, no inter-block edges; chain input/output exposed as real ports on rx_eq_arch. Directional real-valued signal flow only, no termination/reflection modeling. Measured: DC gain 4.000 (spec 4.0 +/-1 dB), pole-frequency amplitude ratio 2.8285 (ideal A0/sqrt2 = 2.8284, +/-1 dB), overdrive |out| peak 0.900 <= 0.945 limit; ARCH_TB_PASS."
+}

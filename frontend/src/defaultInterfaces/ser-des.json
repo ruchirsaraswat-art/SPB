@@ -1,0 +1,403 @@
+{
+  "name": "serdes-rx-if",
+  "phy_type": "ser-des",
+  "clock_domains": [
+    {
+      "name": "clk_ref",
+      "freq_mhz": 100,
+      "owner": "external",
+      "source_block": null,
+      "description": "Board reference. PLL input; CSR/host + sequencer domain."
+    },
+    {
+      "name": "clk_rx_word",
+      "freq_mhz": 100,
+      "owner": "afe",
+      "source_block": "deserializer",
+      "description": "CDR-recovered word clock (1.6 GHz line / 16). Plesiochronous to clk_ref, +/-300 ppm -> elastic FIFO in the digital datapath."
+    }
+  ],
+  "signals": [
+    {
+      "name": "rx_pdata",
+      "direction": "a2d",
+      "width": 16,
+      "clock_domain": "clk_rx_word",
+      "rate": "word",
+      "rate_mhz": 100,
+      "group": "data",
+      "handshake": "none",
+      "afe_block": "deserializer",
+      "digital_block": "rx-align",
+      "meaning": "Deserialized parallel data, LSB = first bit on the wire. Garbage until cdr_locked. Source-synchronous to clk_rx_word."
+    },
+    {
+      "name": "rx_err_sample",
+      "direction": "a2d",
+      "width": 1,
+      "clock_domain": "clk_rx_word",
+      "rate": "word",
+      "rate_mhz": 100,
+      "group": "data",
+      "handshake": "valid",
+      "afe_block": "sampler",
+      "digital_block": "train",
+      "meaning": "Error-slicer decision for eye monitor / sign-sign adaptation (optional). Qualified by rx_err_valid."
+    },
+    {
+      "name": "rx_err_valid",
+      "direction": "a2d",
+      "width": 1,
+      "clock_domain": "clk_rx_word",
+      "rate": "word",
+      "rate_mhz": 100,
+      "group": "data",
+      "handshake": "none",
+      "afe_block": "sampler",
+      "digital_block": "train",
+      "meaning": "Qualifies rx_err_sample (error slicer strobes only when enabled)."
+    },
+    {
+      "name": "clk_rx_word",
+      "direction": "a2d",
+      "width": 1,
+      "clock_domain": "clk_rx_word",
+      "rate": "word",
+      "rate_mhz": 100,
+      "group": "clock",
+      "handshake": "none",
+      "afe_block": "deserializer",
+      "digital_block": "rx-align",
+      "meaning": "Recovered word clock; times every a2d data signal above. Digital treats it as a clock input, never gates it."
+    },
+    {
+      "name": "clk_ref",
+      "direction": "ext",
+      "width": 1,
+      "clock_domain": "clk_ref",
+      "rate": "word",
+      "rate_mhz": 100,
+      "group": "clock",
+      "handshake": "none",
+      "afe_block": "pll",
+      "digital_block": "csr",
+      "meaning": "Reference to AFE PLL and digital host domain."
+    },
+    {
+      "name": "ctle_peak",
+      "direction": "d2a",
+      "width": 4,
+      "clock_domain": "clk_ref",
+      "rate": "quasi_static",
+      "rate_mhz": null,
+      "group": "control",
+      "handshake": "level",
+      "afe_block": "rx-eq",
+      "digital_block": "train",
+      "meaning": "CTLE peaking code (0-15). Hold rule: change only while adapt_hold=1 or en_rx_fe=0."
+    },
+    {
+      "name": "vga_gain",
+      "direction": "d2a",
+      "width": 5,
+      "clock_domain": "clk_ref",
+      "rate": "quasi_static",
+      "rate_mhz": null,
+      "group": "control",
+      "handshake": "level",
+      "afe_block": "rx-frontend",
+      "digital_block": "train",
+      "meaning": "VGA gain code (0-31). Same hold rule as ctle_peak."
+    },
+    {
+      "name": "dfe_tap1",
+      "direction": "d2a",
+      "width": 6,
+      "clock_domain": "clk_ref",
+      "rate": "quasi_static",
+      "rate_mhz": null,
+      "group": "control",
+      "handshake": "level",
+      "afe_block": "rx-eq",
+      "digital_block": "train",
+      "meaning": "DFE tap-1 weight, sign-magnitude (bit5 = sign)."
+    },
+    {
+      "name": "slicer_ofst",
+      "direction": "d2a",
+      "width": 6,
+      "clock_domain": "clk_ref",
+      "rate": "quasi_static",
+      "rate_mhz": null,
+      "group": "control",
+      "handshake": "level",
+      "afe_block": "sampler",
+      "digital_block": "train",
+      "meaning": "Data-slicer offset trim, sign-magnitude, ~1 mV/LSB."
+    },
+    {
+      "name": "eye_vref_code",
+      "direction": "d2a",
+      "width": 6,
+      "clock_domain": "clk_ref",
+      "rate": "quasi_static",
+      "rate_mhz": null,
+      "group": "control",
+      "handshake": "level",
+      "afe_block": "sampler",
+      "digital_block": "train",
+      "meaning": "Error-slicer threshold DAC code (eye monitor vertical axis)."
+    },
+    {
+      "name": "eye_phase_code",
+      "direction": "d2a",
+      "width": 6,
+      "clock_domain": "clk_ref",
+      "rate": "quasi_static",
+      "rate_mhz": null,
+      "group": "control",
+      "handshake": "level",
+      "afe_block": "cdr",
+      "digital_block": "train",
+      "meaning": "PI code for error-slicer sampling phase (eye monitor horizontal axis, 64 steps/UI)."
+    },
+    {
+      "name": "adapt_hold",
+      "direction": "d2a",
+      "width": 1,
+      "clock_domain": "clk_ref",
+      "rate": "quasi_static",
+      "rate_mhz": null,
+      "group": "control",
+      "handshake": "level",
+      "afe_block": "rx-eq",
+      "digital_block": "train",
+      "meaning": "Freeze AFE-internal adaptation while digital rewrites trim codes."
+    },
+    {
+      "name": "pll_locked",
+      "direction": "a2d",
+      "width": 1,
+      "clock_domain": "async",
+      "rate": "async_event",
+      "rate_mhz": null,
+      "group": "status",
+      "handshake": "2ff_sync",
+      "afe_block": "pll",
+      "digital_block": "pwr-seq",
+      "meaning": "PLL lock detector. Gates power-up sequencing step 3. Synchronized into clk_ref."
+    },
+    {
+      "name": "cdr_locked",
+      "direction": "a2d",
+      "width": 1,
+      "clock_domain": "async",
+      "rate": "async_event",
+      "rate_mhz": null,
+      "group": "status",
+      "handshake": "2ff_sync",
+      "afe_block": "cdr",
+      "digital_block": "pwr-seq",
+      "meaning": "CDR lock/valid-data indication. Gates deser reset release and word alignment start. Synchronized into clk_ref."
+    },
+    {
+      "name": "sig_detect",
+      "direction": "a2d",
+      "width": 1,
+      "clock_domain": "async",
+      "rate": "async_event",
+      "rate_mhz": null,
+      "group": "status",
+      "handshake": "2ff_sync",
+      "afe_block": "rx-frontend",
+      "digital_block": "train",
+      "meaning": "Input amplitude above threshold (loss-of-signal inverse). Synchronized into clk_ref."
+    },
+    {
+      "name": "rstn_por",
+      "direction": "ext",
+      "width": 1,
+      "clock_domain": "async",
+      "rate": "async_event",
+      "rate_mhz": null,
+      "group": "reset",
+      "handshake": "2ff_sync",
+      "afe_block": null,
+      "digital_block": "pwr-seq",
+      "meaning": "Chip POR, async assert. Root of both sequences below; release synchronized per domain (2ff per domain)."
+    },
+    {
+      "name": "deser_rstn",
+      "direction": "d2a",
+      "width": 1,
+      "clock_domain": "clk_rx_word",
+      "rate": "async_event",
+      "rate_mhz": null,
+      "group": "reset",
+      "handshake": "level",
+      "afe_block": "deserializer",
+      "digital_block": "pwr-seq",
+      "meaning": "Deserializer/word-counter reset: async assert, release synchronized into clk_rx_word by the AFE."
+    },
+    {
+      "name": "en_afe_bias",
+      "direction": "d2a",
+      "width": 1,
+      "clock_domain": "clk_ref",
+      "rate": "quasi_static",
+      "rate_mhz": null,
+      "group": "power",
+      "handshake": "level",
+      "afe_block": null,
+      "digital_block": "pwr-seq",
+      "meaning": "Master bias enable (bandgap, bias mirrors). First on, last off."
+    },
+    {
+      "name": "en_pll",
+      "direction": "d2a",
+      "width": 1,
+      "clock_domain": "clk_ref",
+      "rate": "quasi_static",
+      "rate_mhz": null,
+      "group": "power",
+      "handshake": "level",
+      "afe_block": "pll",
+      "digital_block": "pwr-seq",
+      "meaning": "PLL enable."
+    },
+    {
+      "name": "en_rx_fe",
+      "direction": "d2a",
+      "width": 1,
+      "clock_domain": "clk_ref",
+      "rate": "quasi_static",
+      "rate_mhz": null,
+      "group": "power",
+      "handshake": "level",
+      "afe_block": "rx-frontend",
+      "digital_block": "pwr-seq",
+      "meaning": "RX frontend enable (term/VGA/CTLE/DFE/slicer)."
+    },
+    {
+      "name": "en_cdr",
+      "direction": "d2a",
+      "width": 1,
+      "clock_domain": "clk_ref",
+      "rate": "quasi_static",
+      "rate_mhz": null,
+      "group": "power",
+      "handshake": "level",
+      "afe_block": "cdr",
+      "digital_block": "pwr-seq",
+      "meaning": "CDR enable."
+    }
+  ],
+  "cdc_points": [
+    {
+      "signal": "pll_locked",
+      "from_domain": "async",
+      "to_domain": "clk_ref",
+      "strategy": "2ff",
+      "notes": "Level signal; 2-flop synchronizer."
+    },
+    {
+      "signal": "cdr_locked",
+      "from_domain": "async",
+      "to_domain": "clk_ref",
+      "strategy": "2ff",
+      "notes": "Level signal; 2-flop synchronizer."
+    },
+    {
+      "signal": "sig_detect",
+      "from_domain": "async",
+      "to_domain": "clk_ref",
+      "strategy": "2ff",
+      "notes": "Level signal; 2-flop synchronizer."
+    },
+    {
+      "signal": "rx_pdata",
+      "from_domain": "clk_rx_word",
+      "to_domain": "clk_ref",
+      "strategy": "async_fifo",
+      "notes": "This IS the elastic FIFO block in the digital diagram - +/-300 ppm absorbed by SKP insert/delete. Core clock = clk_ref (100 MHz)."
+    },
+    {
+      "signal": "rx_err_sample",
+      "from_domain": "clk_rx_word",
+      "to_domain": "clk_ref",
+      "strategy": "async_fifo",
+      "notes": "Travels with rx_pdata through the elastic FIFO."
+    },
+    {
+      "signal": "rx_err_valid",
+      "from_domain": "clk_rx_word",
+      "to_domain": "clk_ref",
+      "strategy": "async_fifo",
+      "notes": "Travels with rx_err_sample through the elastic FIFO."
+    }
+  ],
+  "reset_sequence": [
+    {
+      "step": 1,
+      "action": "POR asserts asynchronously: all enables cleared, deser_rstn=0, trim codes to defaults",
+      "signal": "rstn_por",
+      "wait_for": "-"
+    },
+    {
+      "step": 2,
+      "action": "POR release synchronized into each domain (2ff per domain)",
+      "signal": "rstn_por",
+      "wait_for": "2 clocks per domain"
+    },
+    {
+      "step": 3,
+      "action": "deser_rstn released by the power sequencer only after CDR lock (power sequence step 6)",
+      "signal": "deser_rstn",
+      "wait_for": "cdr_locked"
+    }
+  ],
+  "power_sequence": [
+    {
+      "step": 1,
+      "action": "POR released, all enables 0, deser_rstn=0",
+      "signal": "rstn_por",
+      "wait_for": "-"
+    },
+    {
+      "step": 2,
+      "action": "Enable bias (en_afe_bias=1)",
+      "signal": "en_afe_bias",
+      "wait_for": "20 us settle"
+    },
+    {
+      "step": 3,
+      "action": "Enable PLL (en_pll=1)",
+      "signal": "en_pll",
+      "wait_for": "pll_locked (timeout 500 us -> ERROR)"
+    },
+    {
+      "step": 4,
+      "action": "Enable RX frontend (en_rx_fe=1)",
+      "signal": "en_rx_fe",
+      "wait_for": "5 us settle"
+    },
+    {
+      "step": 5,
+      "action": "Enable CDR (en_cdr=1)",
+      "signal": "en_cdr",
+      "wait_for": "cdr_locked (timeout 1 ms -> retry from 4, 3x then ERROR)"
+    },
+    {
+      "step": 6,
+      "action": "Release deserializer (deser_rstn=1)",
+      "signal": "deser_rstn",
+      "wait_for": "16 word clocks"
+    },
+    {
+      "step": 7,
+      "action": "Start word alignment / training (digital-internal). Power-down is the reverse order; sleep = steps 5-7 undone only.",
+      "signal": null,
+      "wait_for": "aligner lock"
+    }
+  ]
+}

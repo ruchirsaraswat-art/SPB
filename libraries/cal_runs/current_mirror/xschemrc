@@ -1,5 +1,5 @@
 # Project-local xschemrc: pull in the sky130 PDK xschem libraries.
 if {![info exists env(PDK_ROOT)]} { set env(PDK_ROOT) $env(HOME)/.volare }
 source $env(PDK_ROOT)/sky130A/libs.tech/xschem/xschemrc
-# SPB design libraries (Virtuoso-style lib/cell/view directory tree).
+# SPB design libraries (hierarchical lib/cell/view directory tree).
 append XSCHEM_LIBRARY_PATH :/home/rsarasw1/analog-spec-tool/libraries
