@@ -210,6 +210,80 @@ ok("main._find_run_dir prefers/handles missing ids", main._find_run_dir("nosuchr
 main._load_runs_from_disk()
 ok("run registry rescan picks up previous-root run", "runoldroot1" in main._runs)
 
+# --- libraries_dir override (cycle 6 split) ----------------------------------
+
+st.set_working_dir(str(wd_a))  # back to a known-clean current working dir
+ok(
+    "libraries_dir unset -> derived path under working dir",
+    st.libraries_dir_override() is None and st.libraries_root() == wd_a / "libraries",
+)
+payload = st.settings_payload()
+ok(
+    "settings_payload reflects unset override",
+    payload["libraries_dir"] is None
+    and payload["libraries_dir_is_default"] is True
+    and payload["libraries_root"] == str(wd_a / "libraries")
+    and payload["default_libraries_dir"] == str(wd_a / "libraries"),
+)
+
+libs_x = TMP / "libs_x"
+msg = raises_value_error(st.validate_libraries_dir, str(st.BASE_DIR / "backend" / "libdata"))
+ok("libraries_dir inside backend/ rejected", msg is not None and "source tree" in msg)
+
+payload = st.set_libraries_dir(str(libs_x))
+ok(
+    "libraries_dir override applied",
+    payload["libraries_dir"] == str(libs_x)
+    and payload["libraries_dir_is_default"] is False
+    and payload["libraries_root"] == str(libs_x),
+)
+ok("libraries_root() honors the override", st.libraries_root() == libs_x)
+
+res = lb.create_library("lib_in_override")
+ok(
+    "new library files under the override, not the working dir",
+    res["path"] == str(libs_x / "lib_in_override"),
+)
+names = {l["name"]: l for l in lb.list_libraries()}
+ok(
+    "listing still includes libraries filed at the working-dir location before the override",
+    "lib_in_a" in names,
+)
+
+libs_y = TMP / "libs_y"
+payload = st.set_libraries_dir(str(libs_y))
+ok(
+    "switching the override records the old one as previous",
+    [p["libraries_dir"] for p in payload["previous_libraries_dirs"]] == [str(libs_x)],
+)
+names = {l["name"]: l for l in lb.list_libraries()}
+ok(
+    "listing still finds a library filed under the previous override location",
+    "lib_in_override" in names and names["lib_in_override"]["root"] == str(libs_x),
+)
+ok(
+    "find_library_dir searches previous libraries_dir overrides",
+    lb.find_library_dir("lib_in_override") == libs_x / "lib_in_override",
+)
+
+payload = st.set_libraries_dir("")
+ok(
+    "clearing the override reverts to the working-dir-derived path",
+    payload["libraries_dir"] is None
+    and payload["libraries_dir_is_default"] is True
+    and payload["libraries_root"] == str(wd_a / "libraries"),
+)
+ok(
+    "clearing keeps the just-cleared override in previous list",
+    [p["libraries_dir"] for p in st.settings_payload()["previous_libraries_dirs"]]
+    == [str(libs_y), str(libs_x)],
+)
+names = {l["name"]: l for l in lb.list_libraries()}
+ok(
+    "after clearing, both override locations still resolve for listing",
+    "lib_in_override" in names,
+)
+
 # --- xschemrc + write-deny list track every root -----------------------------
 
 fake_run = wd_b / "runs" / "fake"

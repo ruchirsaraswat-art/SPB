@@ -86,6 +86,11 @@ def main():
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page(viewport={"width": 1400, "height": 800})
+        # Focus mode ("Focus: DDR AFE only", 2026-08-27) defaults ON and
+        # hides three of the four workspace panels; this suite asserts the
+        # FULL (unfocused) workbench, so seed the toggle off before load.
+        # Focus-mode behavior has its own suite: browser_check_focus.py.
+        page.add_init_script('localStorage.setItem("focus-ddr-afe", "0")')
         page.goto(BASE)
         page.wait_for_selector('section[data-workspace="overview"]')
         page.wait_for_selector('section[data-workspace="digital"]')

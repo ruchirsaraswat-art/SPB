@@ -66,6 +66,7 @@ from settings import (
     if_chats_root,
     research_root,
     runs_root,
+    set_libraries_dir,
     set_working_dir,
     settings_payload,
 )
@@ -1556,6 +1557,12 @@ class SettingsUpdate(BaseModel):
         description="Directory the tool creates its data under (libraries/, runs/, "
         "research_runs/ subtrees) - absolute path or ~-prefixed; created if missing"
     )
+    libraries_dir: str | None = Field(
+        default=None,
+        description="Optional independent override for where design libraries are "
+        "filed - absolute path or ~-prefixed; created if missing. Empty/omitted "
+        "clears the override, so libraries fall back to <working_dir>/libraries.",
+    )
 
 
 @app.get("/api/settings")
@@ -1567,14 +1574,16 @@ def get_settings():
 
 @app.put("/api/settings")
 def put_settings(body: SettingsUpdate):
-    """Change the working dir. Validated (absolute after ~-expansion,
-    created if missing, writable, not inside the tool's source trees) and
-    applied at the next request - no restart. Existing data is NOT moved:
-    the old location is remembered and stays on the read path; then the
-    run/research registries are rescanned so anything already at the new
-    location shows up immediately."""
+    """Change the working dir and/or the libraries_dir override. Both are
+    validated (absolute after ~-expansion, created if missing, writable, not
+    inside the tool's source trees) and applied at the next request - no
+    restart. Existing data is NOT moved: old locations are remembered and
+    stay on the read path; then the run/research registries are rescanned so
+    anything already at the new location shows up immediately (libraries are
+    always listed live from disk, so no separate rescan is needed there)."""
     try:
-        payload = set_working_dir(body.working_dir)
+        set_working_dir(body.working_dir)
+        payload = set_libraries_dir(body.libraries_dir)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     _load_runs_from_disk()

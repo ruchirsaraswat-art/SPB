@@ -1444,6 +1444,34 @@ button:disabled {
   font-style: italic;
 }
 
+/* Focus mode ("Focus: DDR AFE only", 2026-08-27): non-AFE overview blocks
+   stay depicted but greyed out + disabled while their workspaces are
+   hidden; the caption below names the toggle that brings them back. */
+.phy-overview-block.focus-dimmed,
+.phy-overview-iface.focus-dimmed {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.phy-overview-block.focus-dimmed:hover,
+.phy-overview-iface.focus-dimmed:hover {
+  border-color: #2f3648;
+}
+.phy-overview-firmware.focus-dimmed:hover {
+  border-color: #6b5a33;
+}
+.focus-caption {
+  color: #d9b45c;
+}
+
+/* The focus-mode checkbox in the settings panel: row layout (the generic
+   .settings-panel label rule stacks label text under text inputs). */
+.settings-panel label.focus-mode-toggle {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
 /* --------------------------------------------------------------------------
    Firmware workspace panel: the "Generate register layer" action + its
    results view (compile/test status badges, file list, log tail). */

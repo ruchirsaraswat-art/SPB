@@ -622,11 +622,13 @@ export default function SpecForm({
             On a successful build the schematic, symbol, netlist, testbench, rendered image,
             behavioral models and measurements are copied into{" "}
             <code>
-              {settings?.derived?.libraries || "libraries"}/{spec.library || "<library>"}/&lt;cell&gt;/
+              {settings?.libraries_root || settings?.derived?.libraries || "libraries"}/{spec.library || "<library>"}/&lt;cell&gt;/
             </code>{" "}
             - a lib/cell/view tree that xschem browses directly (it's on every run's
             XSCHEM_LIBRARY_PATH).
-            {settings ? " The libraries root comes from the working directory in Settings (gear, top right)." : ""}
+            {settings
+              ? " The libraries root comes from the work area, or the libraries location override if one is set, in Settings (gear, top right)."
+              : ""}
           </p>
         </div>
       )}
@@ -953,7 +955,10 @@ export default function SpecForm({
         </p>
       )}
       {!spec.library && (
-        <p className="hint">Choose (or create) a design library above to enable the build.</p>
+        <p className="hint">
+          Choose (or create) a design library above to enable this run — every deliverable
+          (including symbol- and model-only runs) files its output into a library cell.
+        </p>
       )}
       <button type="submit" disabled={submitting || !spec.library}>
         {submitting

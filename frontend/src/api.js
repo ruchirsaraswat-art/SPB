@@ -207,11 +207,11 @@ export async function getSettings() {
   return res.json();
 }
 
-export async function saveSettings(workingDir) {
+export async function saveSettings(workingDir, librariesDir) {
   const res = await fetch(`${API_BASE}/api/settings`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ working_dir: workingDir }),
+    body: JSON.stringify({ working_dir: workingDir, libraries_dir: librariesDir || null }),
   });
   if (!res.ok) {
     throw new Error(await apiErrorMessage(res, "Failed to save settings"));

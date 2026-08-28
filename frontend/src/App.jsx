@@ -36,6 +36,24 @@ const WORKSPACES = [
   { id: "firmware", title: "PHY / Firmware" },
 ];
 
+// Focus mode (user scope decision, 2026-08-27): "let us focus on AFE only
+// and only on DDR design to start with". PRESENTATION-LEVEL ONLY - no code
+// or feature is removed: while the toggle (Settings panel, "Focus: DDR AFE
+// only") is on, the interface/controller/firmware workspaces are simply not
+// rendered, the PHY type pull-down pins to DDR (others disabled, "coming
+// later"), the overview greys out the non-AFE blocks, and the AFE panel
+// starts expanded. Toggling it off restores everything. Default ON;
+// persisted in localStorage like the other per-UI state in this app.
+const FOCUS_KEY = "focus-ddr-afe";
+function loadFocusMode() {
+  try {
+    const stored = localStorage.getItem(FOCUS_KEY);
+    return stored === null ? true : stored === "1";
+  } catch {
+    return true;
+  }
+}
+
 // Message to show in the error box. api.js throws Error objects whose
 // .message is already formatted for display (including multi-line 422
 // validation breakdowns - .error-box is white-space: pre-wrap); String(e)
@@ -64,12 +82,12 @@ export default function App() {
   // Complete-architecture view state: which PHY/block/topology the form is
   // on (topology + label feed the schematic sub-window), plus run history so
   // already-built blocks stay marked as the arch matures.
-  const [archView, setArchView] = useState({
-    phy_type: "ser-des",
+  const [archView, setArchView] = useState(() => ({
+    phy_type: loadFocusMode() ? "ddr" : "ser-des",
     selected_block: null,
     topology: null,
     topology_label: null,
-  });
+  }));
   const [allRuns, setAllRuns] = useState([]);
 
   const handleArchChange = useCallback((a) => {
@@ -121,13 +139,15 @@ export default function App() {
   // minimized and are opened via the overview blocks (which un-minimize +
   // scroll) or their own header buttons. Minimize state is deliberately not
   // persisted, so this collapsed default applies on every load.
-  const [minimized, setMinimized] = useState({
+  // Focus-mode exception (2026-08-27): with "Focus: DDR AFE only" on, the
+  // AFE panel is the whole point of the page, so it starts EXPANDED.
+  const [minimized, setMinimized] = useState(() => ({
     overview: false,
-    afe: true,
+    afe: !loadFocusMode(),
     interface: true,
     digital: true,
     firmware: true,
-  });
+  }));
   const toggleMinimized = useCallback((id) => {
     setMinimized((m) => ({ ...m, [id]: !m[id] }));
   }, []);
@@ -172,8 +192,8 @@ export default function App() {
   // is the resulting active PHY, pushed down into SpecForm as a controlled
   // prop (which clears its selected block on change - same contract as when
   // the select lived inside the form).
-  const [archChoice, setArchChoice] = useState("ser-des");
-  const [phyType, setPhyType] = useState("ser-des");
+  const [archChoice, setArchChoice] = useState(() => (loadFocusMode() ? "ddr" : "ser-des"));
+  const [phyType, setPhyType] = useState(() => (loadFocusMode() ? "ddr" : "ser-des"));
   const handlePhyChoice = useCallback(
     (v) => {
       setArchChoice(v);
@@ -190,6 +210,28 @@ export default function App() {
     },
     [customArchs, phyType, handleLoadCustomArch]
   );
+
+  // Focus mode toggle (see FOCUS_KEY above). Turning it ON pins the PHY to
+  // DDR, expands the AFE panel and pulls focus back to it (the hidden
+  // workspaces can't stay focused - the chat sidebar follows focus).
+  // Turning it OFF just re-renders the hidden panels; their minimize state
+  // and the DDR selection are left as they are.
+  const [focusDdrAfe, setFocusDdrAfe] = useState(loadFocusMode);
+  const handleFocusChange = useCallback((on) => {
+    setFocusDdrAfe(on);
+    try {
+      localStorage.setItem(FOCUS_KEY, on ? "1" : "0");
+    } catch {
+      // localStorage unavailable - the toggle just won't persist
+    }
+    if (on) {
+      setArchChoice("ddr");
+      setPhyType("ddr");
+      setMinimized((m) => (m.afe ? { ...m, afe: false } : m));
+      setFocusedWorkspace("afe");
+    }
+  }, []);
+  const visibleWorkspaces = focusDdrAfe ? WORKSPACES.filter((w) => w.id === "afe") : WORKSPACES;
 
   // Tool settings (cycle 5): where the tool creates runs/libraries. Fetched
   // once here and passed down so the spec form can show where things will
@@ -464,6 +506,8 @@ export default function App() {
             error={settingsError}
             onSaved={setSettings}
             onClose={() => setSettingsOpen(false)}
+            focusDdrAfe={focusDdrAfe}
+            onFocusChange={handleFocusChange}
           />
         </div>
       )}
@@ -508,7 +552,12 @@ export default function App() {
                   <h2>PHY architecture</h2>
                   {/* Selector kept in the HEADER (not the body) so it stays
                       reachable while the overview panel is minimized. */}
-                  <PhyTypeSelect archChoice={archChoice} customArchs={customArchs} onChange={handlePhyChoice} />
+                  <PhyTypeSelect
+                    archChoice={archChoice}
+                    customArchs={customArchs}
+                    onChange={handlePhyChoice}
+                    focusDdrOnly={focusDdrAfe}
+                  />
                 </span>
                 <span className="workspace-head-right">
                   <button
@@ -527,11 +576,12 @@ export default function App() {
                     phyType={archView.phy_type}
                     focusedWorkspace={focusedWorkspace}
                     onFocus={handleOverviewFocus}
+                    focusDdrAfe={focusDdrAfe}
                   />
                 </div>
               )}
             </section>
-            {WORKSPACES.map(({ id, title }) => (
+            {visibleWorkspaces.map(({ id, title }) => (
               <section
                 key={id}
                 ref={(el) => (workspaceRefs.current[id] = el)}

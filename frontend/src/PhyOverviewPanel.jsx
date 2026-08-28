@@ -8,7 +8,14 @@
 // can be off-screen, so focus alone looked like a no-op). No state of its
 // own - the real content lives in the three workspaces.
 
-export default function PhyOverviewPanel({ phyType, focusedWorkspace, onFocus }) {
+// Focus mode (2026-08-27, "Focus: DDR AFE only"): the depiction keeps all
+// four blocks (the PHY is still honestly a PHY) but the IF / Controller /
+// Firmware blocks are greyed out and disabled - their workspaces are not
+// rendered while focus is on, so clicking would go nowhere. The hint on
+// each says how to bring them back (Settings toggle).
+const FOCUS_HINT = 'Out of scope while "Focus: DDR AFE only" is on — toggle it off in Settings to work on this';
+
+export default function PhyOverviewPanel({ phyType, focusedWorkspace, onFocus, focusDdrAfe = false }) {
   return (
     <div className="phy-overview">
       <p className="hint">
@@ -32,18 +39,20 @@ export default function PhyOverviewPanel({ phyType, focusedWorkspace, onFocus })
         </button>
         <button
           type="button"
-          className={`phy-overview-iface ${focusedWorkspace === "interface" ? "active" : ""}`}
+          className={`phy-overview-iface ${focusedWorkspace === "interface" ? "active" : ""} ${focusDdrAfe ? "focus-dimmed" : ""}`}
           onClick={() => onFocus("interface")}
-          title="Focus the AFE ↔ Controller interface workspace"
+          disabled={focusDdrAfe}
+          title={focusDdrAfe ? FOCUS_HINT : "Focus the AFE ↔ Controller interface workspace"}
         >
           <strong>IF</strong>
           <span>signals · clocks · CDC · sequences</span>
         </button>
         <button
           type="button"
-          className={`phy-overview-block ${focusedWorkspace === "digital" ? "active" : ""}`}
+          className={`phy-overview-block ${focusedWorkspace === "digital" ? "active" : ""} ${focusDdrAfe ? "focus-dimmed" : ""}`}
           onClick={() => onFocus("digital")}
-          title="Focus the PHY / Controller architecture workspace"
+          disabled={focusDdrAfe}
+          title={focusDdrAfe ? FOCUS_HINT : "Focus the PHY / Controller architecture workspace"}
         >
           <strong>Controller</strong>
           <span>Digital datapath & control — align/framing, training, CSR</span>
@@ -58,9 +67,10 @@ export default function PhyOverviewPanel({ phyType, focusedWorkspace, onFocus })
             path honest. */}
         <button
           type="button"
-          className={`phy-overview-block phy-overview-firmware ${focusedWorkspace === "firmware" ? "active" : ""}`}
+          className={`phy-overview-block phy-overview-firmware ${focusedWorkspace === "firmware" ? "active" : ""} ${focusDdrAfe ? "focus-dimmed" : ""}`}
           onClick={() => onFocus("firmware")}
-          title="Focus the PHY / Firmware workspace"
+          disabled={focusDdrAfe}
+          title={focusDdrAfe ? FOCUS_HINT : "Focus the PHY / Firmware workspace"}
         >
           <strong>
             Firmware <span className="phy-overview-sw-tag">SW</span>
@@ -76,6 +86,12 @@ export default function PhyOverviewPanel({ phyType, focusedWorkspace, onFocus })
         Control plane: SoC operates the PHY through firmware. Data path is
         Controller ⇄ SoC direct (core interface).
       </p>
+      {focusDdrAfe && (
+        <p className="phy-overview-caption focus-caption">
+          Focus: DDR AFE only — interface, controller and firmware workspaces
+          are hidden (coming later). Toggle off in Settings to restore them.
+        </p>
+      )}
     </div>
   );
 }
