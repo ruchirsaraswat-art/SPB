@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import uuid
 from pathlib import Path
 from typing import Any
@@ -85,6 +86,13 @@ _SUBDIRS = {
     # _status.json answer file that suppresses the intake banner - see
     # backend/spec_docs.py.
     "spec_docs": "spec_docs",
+    # Imported DDR channel models (2026-08-29 channel-artifact spec): one
+    # directory per channel_id (= content hash + fit-parameter hash), holding
+    # the source Touchstone file, the passivity-gated SPICE subckt, the
+    # UI-spaced RNM cursors and meta.json - see backend/channels.py. The
+    # directory name IS the fit cache key, so this subtree doubles as the
+    # cache: an unchanged file is never refitted.
+    "channels": "channels",
 }
 
 
@@ -212,6 +220,10 @@ def spec_docs_root() -> Path:
     return _current_root("spec_docs")
 
 
+def channels_root() -> Path:
+    return _current_root("channels")
+
+
 def _all_roots(kind: str) -> list[Path]:
     """Current root first (created on demand), then every previous working
     dir's sub-root that actually exists on disk - newest-config first. This
@@ -260,6 +272,13 @@ def all_interfaces_roots() -> list[Path]:
 
 def all_spec_docs_roots() -> list[Path]:
     return _all_roots("spec_docs")
+
+
+def all_channels_roots() -> list[Path]:
+    """Search order for imported channel models: current working dir's
+    channels/ first, then previous working dirs' (same never-moves-data model
+    as runs) - a channel fitted before a working-dir change stays usable."""
+    return _all_roots("channels")
 
 
 def _validate_dir(raw: str, label: str) -> Path:
@@ -357,6 +376,55 @@ def set_libraries_dir(raw: str | None) -> dict[str, Any]:
     return settings_payload()
 
 
+
+# ---------------------------------------------------------------------------
+# Shared-secret remote-access token (see backend/auth.py for the request-time
+# check). Single token for this whole one-designer tool - no user accounts.
+# ANALOG_SPEC_TOOL_TOKEN, if set, ALWAYS wins and is never written to disk
+# (lets a user pin/rotate the token without touching the settings file).
+# Otherwise the token lives in the same settings.json as everything else
+# above (so ANALOG_SPEC_TOOL_SETTINGS-isolated test runs get their own
+# throwaway token, never the real one) and is generated once, on first use,
+# with `secrets.token_urlsafe` - plenty of entropy for a bearer token that
+# never needs to be typed twice (it's shared via a clickable URL or copy/
+# paste, not memorized).
+TOKEN_ENV_VAR = "ANALOG_SPEC_TOOL_TOKEN"
+
+
+def auth_token() -> str:
+    """The current shared-secret token. Env var override first; else the
+    persisted token, generating+saving one on first call if none exists yet."""
+    env = os.environ.get(TOKEN_ENV_VAR)
+    if env:
+        return env
+    data = _load()
+    existing = data.get("auth_token")
+    if existing:
+        return str(existing)
+    new_token = secrets.token_urlsafe(32)
+    data["auth_token"] = new_token
+    _save(data)
+    return new_token
+
+
+def loopback_exempt() -> bool:
+    """Whether requests from 127.0.0.1/::1 (and, in-process test clients -
+    see backend/auth.py) skip the token check. Defaults to True (the existing
+    local workflow and every browser-check suite keep working unchanged);
+    an operator who wants EVERY request authenticated, even from localhost,
+    can turn it off with set_loopback_exempt(False)."""
+    return bool(_load().get("loopback_exempt", True))
+
+
+def set_loopback_exempt(value: bool) -> dict[str, Any]:
+    """Persist the loopback-exemption setting. Returns the current settings
+    payload (mirrors set_working_dir/set_libraries_dir's return convention)."""
+    data = _load()
+    data["loopback_exempt"] = bool(value)
+    _save(data)
+    return settings_payload()
+
+
 def settings_payload() -> dict[str, Any]:
     """GET /api/settings response: current + default working dir, derived
     sub-paths, and where any existing (previous-location) data lives."""
@@ -398,4 +466,6 @@ def settings_payload() -> dict[str, Any]:
         "libraries_dir_is_default": lib_override is None,
         "libraries_root": str(libraries_root()),
         "previous_libraries_dirs": lib_previous_data,
+        # Remote-access auth (never the token value itself - see backend/auth.py).
+        "loopback_exempt": loopback_exempt(),
     }

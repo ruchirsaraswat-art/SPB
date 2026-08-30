@@ -11,7 +11,9 @@ import DigitalArchPanel from "./DigitalArchPanel";
 import FirmwarePanel from "./FirmwarePanel";
 import PhyOverviewPanel from "./PhyOverviewPanel";
 import PhyTypeSelect from "./PhyTypeSelect";
-import { createRun, getRun, createResearch, getResearch, cancelRun, cancelResearch, listRuns, getSettings, listArchitectures, rtlGenerate } from "./api";
+import ChannelPanel from "./ChannelPanel";
+import TokenGate from "./TokenGate";
+import { createRun, getRun, createResearch, getResearch, cancelRun, cancelResearch, listRuns, getSettings, listArchitectures, rtlGenerate, onAuthRequired, setAuthToken } from "./api";
 import { loadArchitectureIntoPhy } from "./phyArchitectures";
 import "./App.css";
 
@@ -78,6 +80,22 @@ export default function App() {
   const [error, setError] = useState(null);
   const runPollRef = useRef(null);
   const researchPollRef = useRef(null);
+
+  // Remote-access auth gate (see backend/auth.py + api.js's onAuthRequired):
+  // a 401 from ANY API call - not just the ones triggered from this
+  // component - flips this on and the whole app is replaced by TokenGate
+  // until a valid token is entered. Loopback callers (the default local
+  // workflow) never see this: the backend exempts them entirely.
+  const [authRequired, setAuthRequired] = useState(false);
+  useEffect(() => onAuthRequired(() => setAuthRequired(true)), []);
+  function handleTokenSubmit(token) {
+    setAuthToken(token);
+    setAuthRequired(false);
+    // Simplest correct way to retry whatever in-flight/poll requests had
+    // failed with the old (missing) token - a full reload re-runs every
+    // initial fetch (topologies, settings, run history, ...) with it set.
+    window.location.reload();
+  }
 
   // Complete-architecture view state: which PHY/block/topology the form is
   // on (topology + label feed the schematic sub-window), plus run history so
@@ -478,6 +496,10 @@ export default function App() {
     }
   }
 
+  if (authRequired) {
+    return <TokenGate onSubmit={handleTokenSubmit} />;
+  }
+
   return (
     <div className="app-shell">
       <header>
@@ -616,15 +638,22 @@ export default function App() {
                 {!minimized[id] && (
                   <div className="workspace-body">
                     {id === "afe" && (
-                      <SpecForm
-                        onSubmit={handleSubmit}
-                        submitting={researching || submitting}
-                        onArchChange={handleArchChange}
-                        blockStates={blockStates}
-                        settings={settings}
-                        archVersion={archVersion}
-                        phyType={phyType}
-                      />
+                      <>
+                        <SpecForm
+                          onSubmit={handleSubmit}
+                          submitting={researching || submitting}
+                          onArchChange={handleArchChange}
+                          blockStates={blockStates}
+                          settings={settings}
+                          archVersion={archVersion}
+                          phyType={phyType}
+                        />
+                        {/* DDR channel models live in the AFE workspace (the
+                            channel is what the AFE drives/receives through), so
+                            they stay reachable under "Focus: DDR AFE only",
+                            where "afe" is the only rendered workspace. */}
+                        <ChannelPanel />
+                      </>
                     )}
                     {id === "interface" && (
                       <InterfaceEditor phyType={archView.phy_type} version={ifVersion} />

@@ -27,12 +27,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
 import arch_chat as arch_chat_mod
+import auth as auth_mod
+import channels as channels_mod
 import fw_chat as fw_chat_mod
 import fw_generate as fw_generate_mod
 import if_chat as if_chat_mod
@@ -58,10 +61,13 @@ from libraries import (
     validate_stitch_cell_map,
 )
 from settings import (
+    all_channels_roots,
     all_libraries_roots,
     all_research_roots,
     all_runs_roots,
     arch_chats_root,
+    auth_token,
+    channels_root,
     fw_chats_root,
     if_chats_root,
     research_root,
@@ -194,6 +200,24 @@ app = FastAPI(title="SPB-Saraswat PHY Builder")
 def _on_startup() -> None:
     _load_runs_from_disk()
     _load_research_runs_from_disk()
+    # Channels are listed live from disk (like libraries), so there is no
+    # registry to load - only fits orphaned by a killed backend to repair.
+    _repair_orphaned_channels()
+    # Print the shared-secret token (and a ready-to-paste URL carrying it) so
+    # a fresh install/first run has an obvious way to find it - the token
+    # itself only ever lives in the settings file / ANALOG_SPEC_TOOL_TOKEN
+    # env var, never in a served asset.
+    token = auth_token()
+    # run.sh sets ANALOG_SPEC_TOOL_HOST to whatever --host it bound uvicorn
+    # to; falls back to a placeholder when the backend is started some other
+    # way (e.g. `uvicorn main:app` directly during development).
+    host_hint = os.environ.get("ANALOG_SPEC_TOOL_HOST") or "<this-machine's-address>"
+    port_hint = os.environ.get("ANALOG_SPEC_TOOL_PORT") or "8000"
+    # flush=True: stdout is fully buffered (not line-buffered) once redirected
+    # to a file/pipe (e.g. `uvicorn ... > server.log`), so without this the
+    # token can sit unflushed in the buffer for a long time.
+    print(f"[analog-spec-tool] auth token: {token}", flush=True)
+    print(f"[analog-spec-tool] paste-and-go URL: http://{host_hint}:{port_hint}/?token={token}", flush=True)
 
 app.add_middleware(
     CORSMiddleware,
@@ -201,6 +225,39 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _auth_gate(request: Request, call_next):
+    """Shared-secret gate for every /api/* request (see backend/auth.py for
+    the full contract). Static assets and the SPA fallback (mounted at the
+    very bottom of this file, after every /api route) are intentionally NOT
+    gated - the UI is inert without a working API, and gating index.html
+    would prevent an unauthenticated visitor from ever reaching the
+    token-entry screen the frontend shows on a 401. A VALID ?token=... is
+    honored on ANY path (not just /api/*) so the convenience works on the
+    very first page load, before any /api call has been made."""
+    token = auth_token()
+    if request.url.path.startswith("/api/") and request.method != "OPTIONS":
+        if not auth_mod.is_authorized(request, token):
+            return JSONResponse(
+                {
+                    "detail": "unauthorized: provide a valid X-Auth-Token header "
+                    "(or load the app once with ?token=<token> in the URL)"
+                },
+                status_code=401,
+            )
+    response = await call_next(request)
+    if auth_mod.has_valid_query_token(request, token):
+        # httpOnly + SameSite=Lax: readable only by the backend, sent on
+        # same-site navigations/fetches, never by JS - so a subsequent
+        # reload/API call authenticates without the token sitting in the URL.
+        # No `secure` flag: this tool is reached over a private tailnet, often
+        # plain http, and `Secure` cookies are silently dropped over http.
+        response.set_cookie(
+            auth_mod.COOKIE_NAME, token, httponly=True, samesite="lax", path="/",
+        )
+    return response
 
 # run_id -> in-memory state (mirrored to status.json on disk for durability)
 _runs: dict[str, dict] = {}
@@ -1289,6 +1346,31 @@ class SpecDocAnswer(BaseModel):
     )
 
 
+class ChannelImport(BaseModel):
+    """Import request for a DDR channel Touchstone file (see /api/channels).
+
+    Two ways in, mirroring how the rest of the tool takes files: `path` is an
+    absolute path on this machine (server-side attach, like spec_docs), and
+    `content` is the file's text as read by a browser file picker. Touchstone
+    is a text format, so no base64 dance is needed."""
+
+    path: Optional[str] = Field(
+        default=None, description="Absolute path to a .s2p/.s4p file on this machine"
+    )
+    content: Optional[str] = Field(
+        default=None, description="Touchstone file text (browser upload)"
+    )
+    filename: Optional[str] = Field(
+        default=None, description="Original filename - its suffix selects .s2p vs .s4p"
+    )
+    name: Optional[str] = Field(default=None, description="User-facing label for the channel")
+    fit_params: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Overrides for channels.DEFAULT_PARAMS (ui_ps, osr, rs_ohm, rl_ohm, "
+        "passivity_limit, ...). Part of the cache key: changing one refits.",
+    )
+
+
 @app.get("/api/spec_docs")
 def get_spec_docs(phy_type: Optional[str] = None):
     """All spec-doc metadata (newest first) + the per-PHY _status answer
@@ -1807,3 +1889,172 @@ def get_run_file(run_id: str, name: str):
     if not path.exists():
         raise HTTPException(status_code=404, detail="file not found")
     return FileResponse(path)
+
+
+# ---------------------------------------------------------------------------
+# DDR channel models (2026-08-29 channel-artifact spec). One Touchstone import
+# produces two artifacts - a passivity-gated SPICE subckt and UI-spaced RNM
+# cursors - from the SAME fitted network; see backend/channels.py for the
+# rules that make that model trustworthy and for the artifact contract a
+# future Circuit_Builder run deck will consume.
+#
+# Fitting takes tens of seconds to minutes, so an import runs on a background
+# thread exactly like a Circuit_Builder run does, and the UI polls
+# GET /api/channels/{id}. The difference from runs: the channel's on-disk
+# meta.json IS the state (it is rewritten on every progress step), because the
+# channel directory is also the fit CACHE - re-importing an unchanged file
+# with unchanged fit parameters resolves to the same directory and returns the
+# finished result without refitting.
+
+# channel_id -> True while a fit thread is live (in-memory only; guards
+# against two concurrent imports of the same file both starting a fit).
+_channel_jobs: dict[str, bool] = {}
+_channels_lock = threading.Lock()
+
+
+def _repair_orphaned_channels() -> None:
+    """A channel left "running" by a killed backend has no thread behind it -
+    mark it failed rather than showing an import that never finishes."""
+    for root in all_channels_roots():
+        for meta_path in sorted(Path(root).glob("*/meta.json")):
+            meta = channels_mod.read_meta(meta_path.parent)
+            if not meta or meta.get("state") != "running":
+                continue
+            if meta.get("channel_id") in _channel_jobs:
+                continue
+            meta.update(
+                state="done",
+                status="failed",
+                reason="Backend restarted while this channel fit was in progress",
+                finished_at=_now(),
+            )
+            channels_mod.write_meta(meta_path.parent, meta)
+
+
+def _execute_channel_fit(channel_id: str, chan_dir: Path) -> None:
+    try:
+        channels_mod.run_fit(chan_dir)
+    except Exception as exc:  # noqa: BLE001 - never leave a channel "running"
+        meta = channels_mod.read_meta(chan_dir) or {"channel_id": channel_id}
+        meta.update(state="done", status="failed",
+                    reason=f"Unexpected backend error: {exc}", finished_at=_now())
+        channels_mod.write_meta(chan_dir, meta)
+    finally:
+        with _channels_lock:
+            _channel_jobs.pop(channel_id, None)
+
+
+@app.post("/api/channels")
+def create_channel(body: ChannelImport):
+    """Import a Touchstone channel file (.s2p / .s4p). Either `path` (an
+    absolute path on this machine - same server-side attach convention as
+    spec_docs) or `content` (the file's text, from a browser file picker).
+    Returns immediately; poll GET /api/channels/{channel_id}."""
+    if body.content is not None:
+        data = body.content.encode()
+        filename = body.filename or "channel.s2p"
+    elif body.path:
+        try:
+            data = channels_mod.import_from_local_path(body.path)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        filename = body.filename or Path(body.path).name
+    else:
+        raise HTTPException(status_code=400, detail="provide either 'path' or 'content'")
+
+    try:
+        channel_id, chan_dir, meta, cached = channels_mod.prepare_channel(
+            data, filename, name=body.name, params=body.fit_params,
+            root=channels_root(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"could not store channel: {exc}") from None
+
+    if cached:
+        # Cache hit: an identical file with identical fit parameters has
+        # already been fitted. Never refit - that is minutes of CPU.
+        return {"channel_id": channel_id, "state": meta.get("state"),
+                "status": meta.get("status"), "cached": True}
+
+    with _channels_lock:
+        if _channel_jobs.get(channel_id):
+            return {"channel_id": channel_id, "state": "running", "status": None, "cached": False}
+        _channel_jobs[channel_id] = True
+    threading.Thread(
+        target=_execute_channel_fit, args=(channel_id, chan_dir), daemon=True
+    ).start()
+    return {"channel_id": channel_id, "state": "running", "status": None, "cached": False}
+
+
+@app.get("/api/channels")
+def list_channels():
+    return channels_mod.list_channels(all_channels_roots())
+
+
+@app.get("/api/channels/{channel_id}")
+def get_channel(channel_id: str):
+    chan_dir = channels_mod.find_channel_dir(channel_id, all_channels_roots())
+    if chan_dir is None:
+        raise HTTPException(status_code=404, detail="channel not found")
+    meta = channels_mod.read_meta(chan_dir)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="channel metadata not readable")
+    payload = dict(meta)
+    payload["dir"] = str(chan_dir)
+    # The handoff payload for a future run-deck wiring step - only meaningful
+    # once the fit succeeded.
+    payload["artifact_contract"] = (
+        channels_mod.artifact_contract(meta, chan_dir) if meta.get("status") == "success" else None
+    )
+    return payload
+
+
+@app.get("/api/channels/{channel_id}/file/{name}")
+def get_channel_file(channel_id: str, name: str):
+    chan_dir = channels_mod.find_channel_dir(channel_id, all_channels_roots())
+    if chan_dir is None:
+        raise HTTPException(status_code=404, detail="channel not found")
+    if "/" in name or "\\" in name or name in (".", ".."):
+        raise HTTPException(status_code=400, detail="invalid filename")
+    path = (chan_dir / name).resolve()
+    if chan_dir.resolve() not in path.parents:
+        raise HTTPException(status_code=400, detail="invalid path")
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="file not found")
+    return FileResponse(path, media_type="text/plain")
+
+
+# ---------------------------------------------------------------------------
+# Single-origin frontend serving (remote-access hardening). Mounted LAST, so
+# it can never shadow an /api/* route registered above - StaticFiles/the
+# catch-all below only ever handle what nothing else matched. `frontend/dist`
+# is the `npm run build` output (see repo-root run.sh); this mount is a
+# no-op (404s) if that directory doesn't exist yet, e.g. a fresh checkout
+# that has only ever been run via `npm run dev` + a separate uvicorn, which
+# keeps working via the two-port dev flow and the CORS config above.
+
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+if _FRONTEND_DIST.is_dir():
+    # Real build assets (frontend/dist/assets/...) served under /assets, with
+    # far-future caching fine since Vite fingerprints filenames.
+    _assets_dir = _FRONTEND_DIST / "assets"
+    if _assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=_assets_dir), name="frontend-assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def _spa_fallback(full_path: str):
+        """Serve the built SPA for any non-/api path, including deep links
+        and a hard refresh on a client-side route - index.html always wins
+        for those since there's no server-side routing to match against."""
+        if full_path.startswith("api/"):
+            # Never reached in practice (every real /api/* route above already
+            # matched, and this route is registered after all of them) - a
+            # 404 here means a genuinely unknown API path, not a frontend one.
+            raise HTTPException(status_code=404, detail="not found")
+        candidate = _FRONTEND_DIST / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(_FRONTEND_DIST / "index.html")

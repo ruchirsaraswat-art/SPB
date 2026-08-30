@@ -1,4 +1,67 @@
-const API_BASE = "http://127.0.0.1:8000";
+// Relative by default (single-origin mode: FastAPI serves this built
+// frontend itself, see backend/main.py's StaticFiles mount + SPA fallback,
+// mounted AFTER every /api route). VITE_API_BASE overrides this for anyone
+// who still wants split dev servers pointed at a different backend host -
+// `npm run dev`'s own split-server case is handled instead by the Vite proxy
+// in vite.config.js, so relative paths already work there without setting
+// this.
+const API_BASE = import.meta.env.VITE_API_BASE ?? "";
+
+// ---------------------------------------------------------------------------
+// Shared-secret auth (remote-access hardening, see backend/auth.py). The
+// token is entered once by the user (TokenGate.jsx, shown on any 401) and
+// kept in localStorage; every request below sends it as X-Auth-Token. Never
+// logged to the console. A loopback caller (the pre-existing local
+// workflow) never needs a token at all - the backend exempts it - so this
+// is a no-op there (header sent but ignored/unnecessary).
+const TOKEN_STORAGE_KEY = "analog-spec-tool-auth-token";
+
+export function getAuthToken() {
+  try {
+    return localStorage.getItem(TOKEN_STORAGE_KEY) || "";
+  } catch {
+    return ""; // localStorage unavailable (private-mode Safari etc.)
+  }
+}
+
+export function setAuthToken(token) {
+  try {
+    if (token) {
+      localStorage.setItem(TOKEN_STORAGE_KEY, token);
+    } else {
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    /* not persisted this session - still used for in-memory requests below */
+  }
+}
+
+// Fired on ANY 401 from the API, regardless of which panel/action triggered
+// the call, so App.jsx can show the token-entry screen from one place
+// instead of every call site handling it separately.
+const AUTH_REQUIRED_EVENT = "analog-spec-tool:auth-required";
+
+export function onAuthRequired(callback) {
+  window.addEventListener(AUTH_REQUIRED_EVENT, callback);
+  return () => window.removeEventListener(AUTH_REQUIRED_EVENT, callback);
+}
+
+// Drop-in replacement for `fetch` used by every call below: adds the
+// X-Auth-Token header when a token is stored, and raises the auth-required
+// event on a 401 so the app can prompt for a (new) token - the caller's own
+// `!res.ok` handling still runs afterwards unchanged (a 401 still surfaces
+// as a normal "action failed" error to whatever triggered it, in addition
+// to the app-wide prompt).
+async function apiFetch(url, options = {}) {
+  const token = getAuthToken();
+  const headers = { ...(options.headers || {}) };
+  if (token) headers["X-Auth-Token"] = token;
+  const res = await fetch(url, { ...options, headers });
+  if (res.status === 401) {
+    window.dispatchEvent(new CustomEvent(AUTH_REQUIRED_EVENT));
+  }
+  return res;
+}
 
 // Turn an error response into a readable message. FastAPI's 422 body is
 // {"detail": [{loc, msg, type, ...}, ...]} - rendering that raw JSON in the
@@ -34,7 +97,7 @@ async function apiErrorMessage(res, action) {
 }
 
 export async function createRun(spec) {
-  const res = await fetch(`${API_BASE}/api/runs`, {
+  const res = await apiFetch(`${API_BASE}/api/runs`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(spec),
@@ -46,7 +109,7 @@ export async function createRun(spec) {
 }
 
 export async function getRun(runId) {
-  const res = await fetch(`${API_BASE}/api/runs/${runId}`);
+  const res = await apiFetch(`${API_BASE}/api/runs/${runId}`);
   if (!res.ok) {
     throw new Error(`Failed to fetch run ${runId}: ${res.status}`);
   }
@@ -54,7 +117,7 @@ export async function getRun(runId) {
 }
 
 export async function listRuns() {
-  const res = await fetch(`${API_BASE}/api/runs`);
+  const res = await apiFetch(`${API_BASE}/api/runs`);
   if (!res.ok) {
     throw new Error(`Failed to list runs: ${res.status}`);
   }
@@ -69,7 +132,7 @@ export function fileUrl(runId, name) {
 // same session.log/claude_stream.jsonl shape, different id namespace.
 export async function fetchLog(id, name = "session.log", kind = "run") {
   const url = kind === "research" ? researchFileUrl(id, name) : fileUrl(id, name);
-  const res = await fetch(url);
+  const res = await apiFetch(url);
   if (!res.ok) {
     if (res.status === 404) return ""; // log not written yet
     throw new Error(`Failed to fetch log ${name} for ${kind} ${id}: ${res.status}`);
@@ -78,7 +141,7 @@ export async function fetchLog(id, name = "session.log", kind = "run") {
 }
 
 export async function cancelRun(runId) {
-  const res = await fetch(`${API_BASE}/api/runs/${runId}/cancel`, { method: "POST" });
+  const res = await apiFetch(`${API_BASE}/api/runs/${runId}/cancel`, { method: "POST" });
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`Failed to cancel run: ${res.status} ${body}`);
@@ -87,7 +150,7 @@ export async function cancelRun(runId) {
 }
 
 export async function openSchematic(runId) {
-  const res = await fetch(`${API_BASE}/api/runs/${runId}/open-schematic`, { method: "POST" });
+  const res = await apiFetch(`${API_BASE}/api/runs/${runId}/open-schematic`, { method: "POST" });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(body.detail || `Failed to open schematic: ${res.status}`);
@@ -98,7 +161,7 @@ export async function openSchematic(runId) {
 // Hierarchical design libraries (libraries/<lib>/<cell>/<views> on the
 // backend, browsable from xschem via XSCHEM_LIBRARY_PATH).
 export async function listLibraries() {
-  const res = await fetch(`${API_BASE}/api/libraries`);
+  const res = await apiFetch(`${API_BASE}/api/libraries`);
   if (!res.ok) {
     throw new Error(`Failed to list libraries: ${res.status}`);
   }
@@ -106,7 +169,7 @@ export async function listLibraries() {
 }
 
 export async function createLibrary(name) {
-  const res = await fetch(`${API_BASE}/api/libraries`, {
+  const res = await apiFetch(`${API_BASE}/api/libraries`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name }),
@@ -121,7 +184,7 @@ export async function createLibrary(name) {
 // the backend machine - drives the "will be generated but unverified"
 // inline warnings next to the behavioral-model checkboxes.
 export async function getToolchain() {
-  const res = await fetch(`${API_BASE}/api/toolchain`);
+  const res = await apiFetch(`${API_BASE}/api/toolchain`);
   if (!res.ok) {
     throw new Error(`Failed to fetch toolchain status: ${res.status}`);
   }
@@ -129,7 +192,7 @@ export async function getToolchain() {
 }
 
 export async function getTopologies() {
-  const res = await fetch(`${API_BASE}/api/topologies`);
+  const res = await apiFetch(`${API_BASE}/api/topologies`);
   if (!res.ok) {
     throw new Error(`Failed to fetch topologies: ${res.status}`);
   }
@@ -137,7 +200,7 @@ export async function getTopologies() {
 }
 
 export async function createResearch(spec) {
-  const res = await fetch(`${API_BASE}/api/research`, {
+  const res = await apiFetch(`${API_BASE}/api/research`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(spec),
@@ -149,7 +212,7 @@ export async function createResearch(spec) {
 }
 
 export async function getResearch(researchId) {
-  const res = await fetch(`${API_BASE}/api/research/${researchId}`);
+  const res = await apiFetch(`${API_BASE}/api/research/${researchId}`);
   if (!res.ok) {
     throw new Error(`Failed to fetch research ${researchId}: ${res.status}`);
   }
@@ -157,7 +220,7 @@ export async function getResearch(researchId) {
 }
 
 export async function cancelResearch(researchId) {
-  const res = await fetch(`${API_BASE}/api/research/${researchId}/cancel`, { method: "POST" });
+  const res = await apiFetch(`${API_BASE}/api/research/${researchId}/cancel`, { method: "POST" });
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`Failed to cancel research: ${res.status} ${body}`);
@@ -174,7 +237,7 @@ export function researchFileUrl(researchId, name) {
 // else {found:false, message} (the defined empty state). The response's
 // png_url is an API-relative path; join it with apiUrl() for the <img> src.
 export async function resolveSchematic(topology) {
-  const res = await fetch(`${API_BASE}/api/schematic/resolve/${encodeURIComponent(topology)}`);
+  const res = await apiFetch(`${API_BASE}/api/schematic/resolve/${encodeURIComponent(topology)}`);
   if (!res.ok) {
     throw new Error(await apiErrorMessage(res, "Failed to resolve schematic"));
   }
@@ -184,7 +247,7 @@ export async function resolveSchematic(topology) {
 // Spawn interactive xschem on the topology's resolved schematic (backend
 // re-resolves; 409 when no X display is reachable at click time).
 export async function openTopologySchematic(topology) {
-  const res = await fetch(`${API_BASE}/api/schematic/open`, {
+  const res = await apiFetch(`${API_BASE}/api/schematic/open`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ topology }),
@@ -200,7 +263,7 @@ export async function openTopologySchematic(topology) {
 // under (libraries/, runs/, research_runs/), with derived sub-paths and any
 // previous locations that still hold data.
 export async function getSettings() {
-  const res = await fetch(`${API_BASE}/api/settings`);
+  const res = await apiFetch(`${API_BASE}/api/settings`);
   if (!res.ok) {
     throw new Error(`Failed to fetch settings: ${res.status}`);
   }
@@ -208,7 +271,7 @@ export async function getSettings() {
 }
 
 export async function saveSettings(workingDir, librariesDir) {
-  const res = await fetch(`${API_BASE}/api/settings`, {
+  const res = await apiFetch(`${API_BASE}/api/settings`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ working_dir: workingDir, libraries_dir: librariesDir || null }),
@@ -236,7 +299,7 @@ export async function saveSettings(workingDir, librariesDir) {
 // catalog and frames the consultant as a digital-microarchitecture chat -
 // `afeArchitecture` is then sent as READ-ONLY prompt context.
 export async function archChat({ sessionId, message, architecture, phyType, view, afeArchitecture }) {
-  const res = await fetch(`${API_BASE}/api/arch_chat`, {
+  const res = await apiFetch(`${API_BASE}/api/arch_chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -258,7 +321,7 @@ export async function archChat({ sessionId, message, architecture, phyType, view
 // [{role, content, patch?, ts}]}); an unknown id returns an empty
 // transcript - used to restore the sidebar history after a reload.
 export async function getArchChatTranscript(sessionId) {
-  const res = await fetch(`${API_BASE}/api/arch_chat/${encodeURIComponent(sessionId)}`);
+  const res = await apiFetch(`${API_BASE}/api/arch_chat/${encodeURIComponent(sessionId)}`);
   if (!res.ok) {
     throw new Error(await apiErrorMessage(res, "Failed to fetch chat transcript"));
   }
@@ -269,7 +332,7 @@ export async function getArchChatTranscript(sessionId) {
 // architecture. Resolves to the stored entry
 // {name, label, phy_type, created_at, updated_at?, architecture}.
 export async function saveArchitecture({ name, architecture, phyType, label }) {
-  const res = await fetch(`${API_BASE}/api/architectures`, {
+  const res = await apiFetch(`${API_BASE}/api/architectures`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, architecture, phy_type: phyType ?? null, label: label ?? null }),
@@ -285,7 +348,7 @@ export async function saveArchitecture({ name, architecture, phyType, label }) {
 // Built-ins stay frontend-static in phyArchitectures.js - the selector UI
 // merges this list alongside PHY_ARCHITECTURES.
 export async function listArchitectures() {
-  const res = await fetch(`${API_BASE}/api/architectures`);
+  const res = await apiFetch(`${API_BASE}/api/architectures`);
   if (!res.ok) {
     throw new Error(`Failed to list architectures: ${res.status}`);
   }
@@ -301,7 +364,7 @@ export async function listArchitectures() {
 // models}]}], by_phy: {phyType: [block values]}} - same option shape as
 // /api/topologies, separate value namespace.
 export async function getDigitalBlocks() {
-  const res = await fetch(`${API_BASE}/api/digital_blocks`);
+  const res = await apiFetch(`${API_BASE}/api/digital_blocks`);
   if (!res.ok) {
     throw new Error(`Failed to fetch digital blocks: ${res.status}`);
   }
@@ -311,7 +374,7 @@ export async function getDigitalBlocks() {
 // User-saved interface definitions, newest first:
 // {interfaces: [{name, label, phy_type, created_at, warnings, interface}]}.
 export async function listInterfaces() {
-  const res = await fetch(`${API_BASE}/api/interfaces`);
+  const res = await apiFetch(`${API_BASE}/api/interfaces`);
   if (!res.ok) {
     throw new Error(`Failed to list interfaces: ${res.status}`);
   }
@@ -322,7 +385,7 @@ export async function listInterfaces() {
 // definition. Hard validation errors are a 422 (formatted by
 // apiErrorMessage); soft warnings come back in the entry's "warnings".
 export async function saveInterface({ name, interfaceDef, phyType, label }) {
-  const res = await fetch(`${API_BASE}/api/interfaces`, {
+  const res = await apiFetch(`${API_BASE}/api/interfaces`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -344,7 +407,7 @@ export async function saveInterface({ name, interfaceDef, phyType, label }) {
 // cost_usd, duration_ms}; patch ops are the interface set (add_signal,
 // update_clock_domain, set_power_sequence, ...).
 export async function ifChat({ sessionId, message, interfaceDef, afeArchitecture, digitalArchitecture, phyType }) {
-  const res = await fetch(`${API_BASE}/api/if_chat`, {
+  const res = await apiFetch(`${API_BASE}/api/if_chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -365,7 +428,7 @@ export async function ifChat({ sessionId, message, interfaceDef, afeArchitecture
 // Persisted transcript for one interface-chat session (if_chats/ namespace,
 // separate from arch chats); unknown ids return an empty transcript.
 export async function getIfChatTranscript(sessionId) {
-  const res = await fetch(`${API_BASE}/api/if_chat/${encodeURIComponent(sessionId)}`);
+  const res = await apiFetch(`${API_BASE}/api/if_chat/${encodeURIComponent(sessionId)}`);
   if (!res.ok) {
     throw new Error(await apiErrorMessage(res, "Failed to fetch interface chat transcript"));
   }
@@ -381,7 +444,7 @@ export async function getIfChatTranscript(sessionId) {
 // (firmware is host-compiled C, verified by gcc + unit tests, not
 // behavioral-model levels - the "note" says so).
 export async function getFirmwareBlocks() {
-  const res = await fetch(`${API_BASE}/api/firmware_blocks`);
+  const res = await apiFetch(`${API_BASE}/api/firmware_blocks`);
   if (!res.ok) {
     throw new Error(`Failed to fetch firmware blocks: ${res.status}`);
   }
@@ -394,7 +457,7 @@ export async function getFirmwareBlocks() {
 // diagram). Resolves to {session_id, reply, patch, patch_valid,
 // patch_errors, patch_warnings, cost_usd, duration_ms}.
 export async function fwChat({ sessionId, message, firmwareArchitecture, interfaceDef, phyType }) {
-  const res = await fetch(`${API_BASE}/api/fw_chat`, {
+  const res = await apiFetch(`${API_BASE}/api/fw_chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -414,7 +477,7 @@ export async function fwChat({ sessionId, message, firmwareArchitecture, interfa
 // Persisted transcript for one firmware-chat session (fw_chats/ namespace);
 // unknown ids return an empty transcript.
 export async function getFwChatTranscript(sessionId) {
-  const res = await fetch(`${API_BASE}/api/fw_chat/${encodeURIComponent(sessionId)}`);
+  const res = await apiFetch(`${API_BASE}/api/fw_chat/${encodeURIComponent(sessionId)}`);
   if (!res.ok) {
     throw new Error(await apiErrorMessage(res, "Failed to fetch firmware chat transcript"));
   }
@@ -428,7 +491,7 @@ export async function getFwChatTranscript(sessionId) {
 // cost_usd, duration_s}; pass/fail is server-enforced (the backend re-runs
 // gcc -std=c99 -Wall -Werror + make test itself).
 export async function fwGenerate({ phyType, interfaceDef }) {
-  const res = await fetch(`${API_BASE}/api/fw_generate`, {
+  const res = await apiFetch(`${API_BASE}/api/fw_generate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ phy_type: phyType, interface: interfaceDef }),
@@ -449,7 +512,7 @@ export async function fwGenerate({ phyType, interfaceDef }) {
 // status: {phyType: {answer: "attached"|"no_spec"|null, answered_at}}}.
 export async function listSpecDocs(phyType) {
   const q = phyType ? `?phy_type=${encodeURIComponent(phyType)}` : "";
-  const res = await fetch(`${API_BASE}/api/spec_docs${q}`);
+  const res = await apiFetch(`${API_BASE}/api/spec_docs${q}`);
   if (!res.ok) {
     throw new Error(await apiErrorMessage(res, "Failed to list spec docs"));
   }
@@ -461,7 +524,7 @@ export async function listSpecDocs(phyType) {
 // {type: "reference", citation}. Also records the per-PHY answer "attached"
 // (suppresses the intake banner).
 export async function createSpecDoc({ phyType, metadata }) {
-  const res = await fetch(`${API_BASE}/api/spec_docs`, {
+  const res = await apiFetch(`${API_BASE}/api/spec_docs`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ phy_type: phyType, metadata }),
@@ -473,7 +536,7 @@ export async function createSpecDoc({ phyType, metadata }) {
 }
 
 export async function updateSpecDoc({ phyType, docId, metadata }) {
-  const res = await fetch(
+  const res = await apiFetch(
     `${API_BASE}/api/spec_docs/${encodeURIComponent(phyType)}/${encodeURIComponent(docId)}`,
     {
       method: "PUT",
@@ -488,7 +551,7 @@ export async function updateSpecDoc({ phyType, docId, metadata }) {
 }
 
 export async function deleteSpecDoc({ phyType, docId }) {
-  const res = await fetch(
+  const res = await apiFetch(
     `${API_BASE}/api/spec_docs/${encodeURIComponent(phyType)}/${encodeURIComponent(docId)}`,
     { method: "DELETE" }
   );
@@ -501,7 +564,7 @@ export async function deleteSpecDoc({ phyType, docId }) {
 // Set the per-PHY spec-doc answer ("no_spec" or "attached") - an explicit
 // choice means the intake banner never auto-asks again for this PHY.
 export async function setSpecDocAnswer({ phyType, answer }) {
-  const res = await fetch(
+  const res = await apiFetch(
     `${API_BASE}/api/spec_docs/${encodeURIComponent(phyType)}/answer`,
     {
       method: "POST",
@@ -521,7 +584,7 @@ export async function setSpecDocAnswer({ phyType, answer }) {
 // other run; the verdict is server-enforced (backend re-runs iverilog+vvp
 // itself; controller runs may come back "partial").
 export async function rtlGenerate(request) {
-  const res = await fetch(`${API_BASE}/api/rtl_generate`, {
+  const res = await apiFetch(`${API_BASE}/api/rtl_generate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
@@ -530,6 +593,53 @@ export async function rtlGenerate(request) {
     throw new Error(await apiErrorMessage(res, "Failed to start RTL generation"));
   }
   return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// DDR channel models (backend/channels.py). Importing a Touchstone file
+// vector-fits it, which takes tens of seconds to minutes, so importChannel
+// returns as soon as the job is queued and the panel polls getChannel until
+// state === "done". `cached: true` in the response means an identical file
+// with identical fit parameters was already fitted - no work was done.
+
+export async function importChannel({ content, filename, path, name, fitParams }) {
+  const res = await apiFetch(`${API_BASE}/api/channels`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content, filename, path, name, fit_params: fitParams }),
+  });
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Failed to import channel"));
+  }
+  return res.json();
+}
+
+export async function listChannels() {
+  const res = await apiFetch(`${API_BASE}/api/channels`);
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Failed to list channels"));
+  }
+  return res.json();
+}
+
+export async function getChannel(channelId) {
+  const res = await apiFetch(`${API_BASE}/api/channels/${encodeURIComponent(channelId)}`);
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Failed to load channel"));
+  }
+  return res.json();
+}
+
+// Raw artifact text (channel.sp / cursors.txt / taps.hex / fit.log) - shown in
+// the panel's raw view so a suspicious fit can actually be inspected.
+export async function fetchChannelFile(channelId, name) {
+  const res = await apiFetch(
+    `${API_BASE}/api/channels/${encodeURIComponent(channelId)}/file/${encodeURIComponent(name)}`
+  );
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, `Failed to load ${name}`));
+  }
+  return res.text();
 }
 
 export function apiUrl(path) {

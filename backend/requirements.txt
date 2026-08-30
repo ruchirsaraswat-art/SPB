@@ -1,3 +1,6 @@
 fastapi
 uvicorn[standard]
 pydantic
+# DDR channel models (backend/channels.py): Touchstone reading + vector
+# fitting + the SPICE subcircuit emitter. Pulls in numpy/scipy/pandas.
+scikit-rf

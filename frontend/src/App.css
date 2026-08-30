@@ -2106,3 +2106,196 @@ button:disabled {
 .rtl-filed code {
   margin-right: 8px;
 }
+
+/* ---------------------------------------------------------------------------
+   DDR channel model panel (ChannelPanel.jsx), inside the AFE workspace. */
+
+.chan-section {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid #2a2f3a;
+}
+
+.chan-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.chan-head h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.chan-body {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chan-import {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-end;
+}
+
+.chan-file-label,
+.chan-path-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.8rem;
+  color: #9aa4b2;
+}
+
+.chan-path-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.chan-path-row input[type="text"] {
+  min-width: 280px;
+}
+
+.chan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chan-list-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px;
+  background: #171b23;
+  border: 1px solid #2a2f3a;
+  border-radius: 6px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chan-list-item.selected {
+  border-color: #3b82f6;
+  background: #16203a;
+}
+
+.chan-list-meta {
+  color: #9aa4b2;
+  font-size: 0.8rem;
+}
+
+.chan-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: #171b23;
+  border: 1px solid #2a2f3a;
+  border-radius: 6px;
+}
+
+.chan-progress code {
+  font-size: 0.78rem;
+  color: #7dd8a0;
+}
+
+.chan-verdict {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid #2a2f3a;
+}
+
+.chan-verdict-ok {
+  background: #12241a;
+  border-color: #1f5c3a;
+  color: #7dd8a0;
+}
+
+.chan-verdict-bad {
+  background: #2b1414;
+  border-color: #7f1d1d;
+  color: #f0a0a0;
+}
+
+.chan-verdict .hint {
+  color: inherit;
+  opacity: 0.75;
+}
+
+.chan-metrics h4 {
+  margin: 14px 0 6px;
+  font-size: 0.85rem;
+  color: #cbd5e1;
+}
+
+.chan-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px 18px;
+  margin-top: 10px;
+}
+
+.chan-metric-grid > div {
+  display: flex;
+  flex-direction: column;
+}
+
+.chan-metric-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #9aa4b2;
+}
+
+.chan-table {
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.chan-table th,
+.chan-table td {
+  padding: 3px 12px 3px 0;
+  text-align: right;
+  border-bottom: 1px solid #232833;
+}
+
+.chan-table th:first-child,
+.chan-table td:first-child {
+  text-align: left;
+}
+
+.chan-table th {
+  color: #9aa4b2;
+  font-weight: 500;
+}
+
+.chan-artifact-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chan-raw {
+  max-height: 320px;
+  overflow: auto;
+  background: #0f131a;
+  border: 1px solid #2a2f3a;
+  border-radius: 6px;
+  padding: 10px;
+  font-size: 0.75rem;
+  white-space: pre;
+}
+
+.chan-contract code {
+  word-break: break-all;
+}

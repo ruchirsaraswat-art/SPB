@@ -24,6 +24,10 @@ fw_chats/
 # never publish; repo is public)
 spec_docs/
 
+# Imported DDR channel models + their fit artifacts (user-supplied Touchstone
+# files may be confidential; the fits are large and reproducible from source)
+channels/
+
 # Local scratch
 *.log
 .DS_Store
