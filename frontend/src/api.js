@@ -259,6 +259,75 @@ export async function openTopologySchematic(topology) {
   return body;
 }
 
+// Draw a new schematic by hand (2026-09): for a block with no resolved
+// schematic yet (resolveSchematic() returned found:false). Creates
+// libraries/<library>/<cell>/<cell>.sch as a blank-but-valid xschem file -
+// same library/cell convention as the spec form's library picker, just
+// reached from the schematic panel's empty state instead.
+
+// Thrown specifically on a 409 (cell already has a .sch) so the caller can
+// offer "open it" instead of just showing a generic error string.
+export class CellExistsError extends Error {
+  constructor(message, library, cell) {
+    super(message);
+    this.name = "CellExistsError";
+    this.library = library;
+    this.cell = cell;
+  }
+}
+
+export async function createBlankSchematic(library, cell, topology, label) {
+  const res = await apiFetch(`${API_BASE}/api/schematic/new-cell`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ library, cell, topology, label: label || null }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if (res.status === 409 && body.detail?.library) {
+      throw new CellExistsError(
+        body.detail.message || "That cell already has a schematic",
+        body.detail.library,
+        body.detail.cell
+      );
+    }
+    throw new Error(body.detail || `Failed to create schematic: ${res.status}`);
+  }
+  return body;
+}
+
+// Live xschem session on a SPECIFIC library cell (not topology-resolved) -
+// the counterpart to startXschemSession above for a cell resolveSchematic
+// can't find yet (freshly created, or not captured since the last edit).
+export async function startXschemCellSession(library, cell) {
+  const res = await apiFetch(`${API_BASE}/api/xschem/sessions/cell`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ library, cell }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(body.detail || `Failed to start xschem session: ${res.status}`);
+  }
+  return body;
+}
+
+// Headlessly render the cell's current .sch to a PNG, extract its netlist,
+// and update its provenance so resolveSchematic finds it from now on. Call
+// after saving from a live session; safe to call again after further edits.
+export async function captureSchematic(library, cell) {
+  const res = await apiFetch(`${API_BASE}/api/schematic/capture`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ library, cell }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(body.detail || `Failed to capture schematic: ${res.status}`);
+  }
+  return body;
+}
+
 // Interactive xschem-over-VNC sessions (2026-09 remote-access spec): the
 // browser-reachable alternative to openTopologySchematic above, for anyone
 // reaching this tool remotely (Tailscale etc) instead of sitting at the

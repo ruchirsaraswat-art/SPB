@@ -32,6 +32,7 @@ import os
 import re
 import subprocess
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
@@ -332,3 +333,242 @@ def launch_for_resolved(resolved: dict[str, Any]) -> dict[str, Any]:
     launch_xschem). ValueError propagates from sch_and_cwd_for_resolved."""
     sch_path, cwd = sch_and_cwd_for_resolved(resolved)
     return launch_xschem(sch_path, cwd)
+
+
+# --- draw-a-new-schematic-by-hand (a block with NO resolved schematic yet) --
+#
+# Every gap block (DDR's Vref Gen, ODT, ...) hits resolve_schematic's empty
+# state: no filed cell, no successful run. This section is the other side of
+# that: create a blank-but-valid .sch at libraries/<lib>/<cell>/<cell>.sch (the
+# SAME library/cell/view convention libraries.py already owns - never a new
+# location), open a live xschem session on it directly (bypassing
+# resolve_schematic entirely, since there is nothing to resolve to yet - no
+# PNG exists), and later "capture" what the user drew: headlessly render a PNG
+# and extract a netlist so resolve_schematic finds it from then on exactly
+# like a Circuit_Builder run's output.
+#
+# Blank-schematic format validated against libraries/cal_runs/current_mirror/
+# current_mirror.sch (the one hand-authored cell already in this tree) and
+# empirically confirmed to open/render/netlist cleanly (2026-09): it is
+# exactly the six-line header xschem itself writes for a brand-new schematic
+# (v/G/K/V/S/E; no N/C/T lines - those only appear once something is placed).
+_BLANK_SCH_TEMPLATE = (
+    "v {xschem version=3.4.4 file_version=1.2}\n"
+    "G {}\n"
+    "K {}\n"
+    "V {}\n"
+    "S {}\n"
+    "E {}\n"
+)
+
+
+class CellExists(RuntimeError):
+    """Refused: `library`/`cell` already has a .sch - the caller must offer
+    "open it" instead of silently clobbering someone's existing work."""
+
+    def __init__(self, library: str, cell: str):
+        self.library = library
+        self.cell = cell
+        super().__init__(
+            f"{library}/{cell} already has a schematic - open the existing one instead "
+            "of creating a new cell with the same name"
+        )
+
+
+class CaptureFailed(RuntimeError):
+    pass
+
+
+def create_blank_cell(
+    library: str, cell: str, topology: str, label: Optional[str] = None
+) -> dict[str, Any]:
+    """Create libraries/<library>/<cell>/<cell>.sch as a blank-but-valid
+    xschem schematic, and (re)write that cell dir's xschemrc so sky130
+    symbols and every filed library are reachable from its browser the moment
+    a live session opens it. Never overwrites an existing .sch (raises
+    CellExists); a cell dir that already exists with OTHER views (e.g. a
+    prior symbol/model-only run left no .sch) is extended in place, not
+    blocked. Raises ValueError on a bad library/cell/topology name (same
+    validators the rest of the tool's library picker uses)."""
+    from libraries import create_library, find_library_dir, validate_library_name
+
+    validate_library_name(library)
+    validate_library_name(cell)
+    validate_topology_name(topology)
+
+    lib_dir = find_library_dir(library)
+    if lib_dir is None:
+        create_library(library)
+        lib_dir = find_library_dir(library)
+    cell_dir = lib_dir / cell
+    sch_path = cell_dir / f"{cell}.sch"
+    if sch_path.is_file():
+        raise CellExists(library, cell)
+
+    cell_dir.mkdir(parents=True, exist_ok=True)
+    sch_path.write_text(_BLANK_SCH_TEMPLATE)
+
+    prov_path = cell_dir / "provenance.json"
+    prov: dict[str, Any] = {}
+    if prov_path.exists():
+        try:
+            prov = json.loads(prov_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            prov = {}
+    prov["topology"] = topology
+    if label:
+        prov["label"] = label
+    prov["source"] = "manual"  # hand-drawn in xschem, not a Circuit_Builder run
+    prov.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+    views = prov.get("views") or []
+    if sch_path.name not in views:
+        views.append(sch_path.name)
+    prov["views"] = views
+    prov_path.write_text(json.dumps(prov, indent=2))
+
+    # Written now (not lazily on first session start, unlike the resolved-
+    # schematic path) - the whole point of this action is to open a session
+    # on this exact file right away.
+    _write_project_xschemrc(cell_dir)
+
+    return {
+        "library": library, "cell": cell, "dir": str(cell_dir),
+        "sch": sch_path.name, "topology": topology,
+    }
+
+
+def sch_and_cwd_for_cell(library: str, cell: str) -> tuple[Path, Path]:
+    """A specific library cell's .sch path + cwd, without going through
+    resolve_schematic (which requires a rendered PNG to consider a cell
+    "found" - exactly the state a freshly-created blank cell, or one whose
+    live session hasn't been captured yet, is never in). ValueError when the
+    library/cell doesn't exist or has no .sch - callers turn that into a
+    404/422, not a crash."""
+    from libraries import find_library_dir, validate_library_name
+
+    validate_library_name(library)
+    validate_library_name(cell)
+    lib_dir = find_library_dir(library)
+    cell_dir = (lib_dir / cell) if lib_dir else None
+    if cell_dir is None or not cell_dir.is_dir():
+        raise ValueError(f"{library}/{cell} does not exist")
+    sch_path = cell_dir / f"{cell}.sch"
+    if not sch_path.is_file():
+        raise ValueError(f"{library}/{cell} has no {cell}.sch")
+    return sch_path, cell_dir
+
+
+def capture_manual_cell(library: str, cell: str) -> dict[str, Any]:
+    """The round-trip: headlessly render the cell's current .sch to a PNG and
+    extract its SPICE netlist, then update the cell's provenance so
+    resolve_schematic finds it for that topology from now on - the same
+    filing outcome a successful Circuit_Builder run produces, just reached by
+    hand-drawing in a live xschem session instead.
+
+    Idiom validated by hand (see the xschem-schematic-authoring workflow
+    notes) and re-confirmed here against this exact command form (2026-09):
+      - PNG:     `xvfb-run -a xschem -q --png --plotfile <cell>.png <cell>.sch
+                  --tcl "set enable_layer(15) 0; set enable_layer(17) 0"`
+                  (NEVER -x/--no_x for this command - it blocks PNG export
+                  even under Xvfb).
+      - netlist: `xschem -x -q -n -s -o <cell_dir> -N <cell>.spice <cell>.sch`
+                  - genuinely headless, needs no X/Xvfb at all for -x/-n.
+    A netlist-extraction failure does NOT abort the capture (the PNG +
+    provenance are what resolve_schematic needs); it's reported back as
+    `netlist_warning` instead so the caller can surface it without treating
+    the whole capture as failed.
+    """
+    sch_path, cell_dir = sch_and_cwd_for_cell(library, cell)
+
+    _write_project_xschemrc(cell_dir)
+
+    # xschem resolves the relative schematic-filename argument against its
+    # OWN idea of "current directory" - which, empirically confirmed 2026-09,
+    # is $env(PWD) (a plain string it reads, not a real getcwd() syscall),
+    # NOT the OS-level working directory subprocess.Popen's cwd= sets. A
+    # stale inherited PWD (e.g. the backend process's own launch directory)
+    # silently sends xschem looking for the schematic THERE instead - it logs
+    # "unable to open file: <wrong path>" but still exits 0 and still writes
+    # an (empty) netlist file, so this is NOT optional: without it, a capture
+    # can "succeed" while netlisting nothing. Always override PWD to the
+    # cell dir for both subprocess calls below, independent of whatever PWD
+    # the backend itself happens to have been started with.
+    env = os.environ.copy()
+    env["PWD"] = str(cell_dir)
+
+    png_name = f"{cell}.png"
+    log_path = cell_dir / "capture.log"
+    render_cmd = [
+        "xvfb-run", "-a", "xschem", "-q", "--png", "--plotfile", png_name,
+        sch_path.name, "--tcl", "set enable_layer(15) 0; set enable_layer(17) 0",
+    ]
+    try:
+        with open(log_path, "w") as logf:
+            proc = subprocess.run(
+                render_cmd, cwd=str(cell_dir), env=env, stdout=logf, stderr=subprocess.STDOUT, timeout=60
+            )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        raise CaptureFailed(f"could not render {cell}.sch to PNG: {exc}") from None
+    render_log = log_path.read_text() if log_path.exists() else ""
+    if proc.returncode != 0 or not (cell_dir / png_name).is_file() or "unable to open file" in render_log:
+        raise CaptureFailed(f"PNG render failed (xschem exit {proc.returncode}): {render_log[-800:]}")
+
+    spice_name = f"{cell}.spice"
+    netlist_cmd = [
+        "xschem", "-x", "-q", "-n", "-s", "-o", str(cell_dir), "-N", spice_name, sch_path.name,
+    ]
+    netlist_ok = False
+    netlist_warning = None
+    try:
+        with open(log_path, "a") as logf:
+            proc2 = subprocess.run(
+                netlist_cmd, cwd=str(cell_dir), env=env, stdout=logf, stderr=subprocess.STDOUT, timeout=60
+            )
+        netlist_log = log_path.read_text()
+        # xschem can exit 0 and still write a (wrongly empty) netlist file
+        # after failing to open the source schematic - "unable to open
+        # file" in the log is the only reliable tell, so treat it as a
+        # failure even though returncode/file-exists both look fine.
+        netlist_ok = (
+            proc2.returncode == 0
+            and (cell_dir / spice_name).is_file()
+            and "unable to open file" not in netlist_log
+        )
+        if not netlist_ok:
+            netlist_warning = (
+                f"netlist extraction failed (xschem exit {proc2.returncode}) - see capture.log; "
+                "the rendered PNG and provenance were still updated"
+            )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        netlist_warning = f"netlist extraction failed to run: {exc}"
+
+    if not netlist_ok:
+        # Never leave a bogus (empty-subckt, wrong-file) netlist sitting on
+        # disk looking like a real view - a stale one from a PREVIOUS
+        # successful capture is fine to keep, but a fresh failed attempt's
+        # output must not survive to be mistaken for real content.
+        (cell_dir / spice_name).unlink(missing_ok=True)
+
+    prov_path = cell_dir / "provenance.json"
+    prov: dict[str, Any] = {}
+    if prov_path.exists():
+        try:
+            prov = json.loads(prov_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            prov = {}
+    views = prov.get("views") or []
+    for fname in (sch_path.name, png_name, spice_name if netlist_ok else None):
+        if fname and fname not in views and (cell_dir / fname).is_file():
+            views.append(fname)
+    prov["views"] = views
+    prov["filed_at"] = datetime.now(timezone.utc).isoformat()
+    prov.setdefault("source", "manual")
+    prov_path.write_text(json.dumps(prov, indent=2))
+
+    return {
+        "library": library, "cell": cell, "dir": str(cell_dir),
+        "sch": sch_path.name, "png": png_name,
+        "netlist": spice_name if netlist_ok else None,
+        "netlist_warning": netlist_warning,
+        "png_url": f"/api/libraries/{library}/{cell}/file/{png_name}",
+    }

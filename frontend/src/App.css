@@ -837,6 +837,15 @@ button:disabled {
   margin: 0 0 10px;
 }
 
+/* Empty state's "draw one by hand" action (2026-09). */
+.schematic-empty-state .new-schematic-form {
+  margin-top: 10px;
+}
+
+.schematic-empty-state .library-picker {
+  margin-bottom: 10px;
+}
+
 .schematic-actions {
   display: flex;
   align-items: center;

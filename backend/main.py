@@ -87,11 +87,16 @@ from models_contract import (
     validate_models_request,
 )
 from schematics import (
+    CaptureFailed,
+    CellExists,
     DisplayUnavailable,
     LaunchFailed,
+    capture_manual_cell,
+    create_blank_cell,
     display_status,
     launch_for_resolved,
     resolve_schematic,
+    sch_and_cwd_for_cell,
     sch_and_cwd_for_resolved,
     validate_topology_name,
 )
@@ -1841,6 +1846,88 @@ def open_topology_schematic(body: SchematicOpenRequest):
         raise HTTPException(status_code=409, detail=str(exc)) from None
     except LaunchFailed as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from None
+
+
+# ---------------------------------------------------------------------------
+# Draw a new schematic by hand (2026-09): the other side of the empty state
+# above - a block with no resolved schematic yet (every not-started DDR
+# block: Vref Gen, ODT, ...) gets a blank-but-valid .sch filed at
+# libraries/<lib>/<cell>/ (see schematics.create_blank_cell), opened directly
+# in a live VNC session (schematics.sch_and_cwd_for_cell bypasses
+# resolve_schematic entirely - there is nothing to resolve to until it's
+# captured), then "captured" back into a rendered PNG + netlist so
+# resolve_schematic finds it for that topology from then on, same as a
+# Circuit_Builder run's output.
+
+
+class NewCellRequest(BaseModel):
+    library: str = Field(description="Design library to create/use (letters/digits/_/-, max 64 chars)")
+    cell: str = Field(description="New cell name (same charset rules as a library name)")
+    topology: str = Field(description="Topology this hand-drawn cell is for")
+    label: str | None = Field(default=None, description="Optional human label for the cell")
+
+
+@app.post("/api/schematic/new-cell")
+def new_schematic_cell(body: NewCellRequest):
+    """Create libraries/<library>/<cell>/<cell>.sch as a blank, openable
+    xschem schematic. 409 (with library/cell in the detail so the frontend
+    can offer "open it instead") when that cell already has a .sch - this
+    NEVER overwrites existing work."""
+    try:
+        return create_blank_cell(body.library, body.cell, body.topology, body.label)
+    except CellExists as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": str(exc), "library": exc.library, "cell": exc.cell},
+        ) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+
+class CellSessionRequest(BaseModel):
+    library: str = Field(description="Library holding the cell to open a live xschem session on")
+    cell: str = Field(description="Cell name (must already have a .sch)")
+
+
+@app.post("/api/xschem/sessions/cell")
+def start_xschem_cell_session(body: CellSessionRequest):
+    """Start (or reuse) a live xschem-over-VNC session directly on a specific
+    library cell's .sch - the counterpart to POST /api/xschem/sessions for a
+    cell that resolve_schematic can't find yet (a freshly-created blank
+    schematic, or one whose live session hasn't been captured). Same
+    exception-to-status-code mapping as the topology-based route."""
+    try:
+        sch_path, cwd = sch_and_cwd_for_cell(body.library, body.cell)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    try:
+        return xschem_session_mod.start_session(cwd, sch_path, f"{body.library}/{body.cell}")
+    except xschem_session_mod.PrereqMissing as exc:
+        raise HTTPException(status_code=409, detail=exc.status.get("message", str(exc))) from None
+    except xschem_session_mod.TooManySessions as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from None
+    except xschem_session_mod.LaunchFailed as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from None
+
+
+class CaptureRequest(BaseModel):
+    library: str = Field(description="Library holding the cell to capture")
+    cell: str = Field(description="Cell name (must already have a .sch)")
+
+
+@app.post("/api/schematic/capture")
+def capture_schematic_cell(body: CaptureRequest):
+    """Render the cell's current .sch to a PNG and extract its netlist, and
+    update its provenance so resolve_schematic finds it from now on. Call
+    this after saving from a live xschem session (the "Refresh from xschem"
+    action) - it re-renders whatever is on disk right now, so it's also safe
+    to call again after further edits."""
+    try:
+        return capture_manual_cell(body.library, body.cell)
+    except CaptureFailed as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
 
 
 # ---------------------------------------------------------------------------
