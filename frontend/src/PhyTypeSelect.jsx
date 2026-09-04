@@ -10,11 +10,11 @@
 // (the "Custom (saved architectures)" optgroup). App owns the choice and
 // pushes the resulting phy_type down into SpecForm.
 //
-// Focus mode (2026-08-27, "Focus: DDR AFE only" in Settings): with
-// focusDdrOnly set, DDR is the only selectable PHY type - the other
-// built-ins (and non-DDR saved architectures) stay listed but DISABLED
-// with a "coming later" hint, so nothing is removed and the full list
-// comes back the moment the focus toggle is switched off.
+// Every built-in PHY type is selectable. Focus mode (see App.jsx) narrows
+// which WORKSPACES are shown - AFE only, hiding interface/controller/
+// firmware - but it deliberately does NOT restrict the PHY type: between
+// 2026-08-27 and 2026-08-31 it pinned the selector to DDR, which just read
+// as a broken pull-down.
 const BUILTIN_PHY_TYPES = [
   ["ser-des", "SerDes (Serializer/Deserializer)"],
   ["ddr", "DDR (Double Data Rate Memory)"],
@@ -24,34 +24,26 @@ const BUILTIN_PHY_TYPES = [
   ["die-to-die", "Die-to-Die (Chiplet Interconnect)"],
 ];
 
-export default function PhyTypeSelect({ archChoice, customArchs = [], onChange, focusDdrOnly = false }) {
+export default function PhyTypeSelect({ archChoice, customArchs = [], onChange }) {
   return (
     <label className="phy-type-select" onClick={(e) => e.stopPropagation()}>
       <span>PHY Type / Architecture</span>
       <select value={archChoice} onChange={(e) => onChange(e.target.value)}>
         <optgroup label="Built-in PHY types">
-          {BUILTIN_PHY_TYPES.map(([value, label]) => {
-            const dimmed = focusDdrOnly && value !== "ddr";
-            return (
-              <option key={value} value={value} disabled={dimmed}>
-                {label}
-                {dimmed ? " — coming later (focus: DDR AFE only)" : ""}
-              </option>
-            );
-          })}
+          {BUILTIN_PHY_TYPES.map(([value, label]) => (
+            <option key={value} value={value}>
+              {label}
+            </option>
+          ))}
         </optgroup>
         {customArchs.length > 0 && (
           <optgroup label="Custom (saved architectures)">
-            {customArchs.map((a) => {
-              const dimmed = focusDdrOnly && a.phy_type !== "ddr";
-              return (
-                <option key={a.name} value={`custom:${a.name}`} disabled={dimmed}>
-                  {a.label || a.name}
-                  {a.phy_type ? ` — ${a.phy_type}` : ""}
-                  {dimmed ? " — coming later (focus: DDR AFE only)" : ""}
-                </option>
-              );
-            })}
+            {customArchs.map((a) => (
+              <option key={a.name} value={`custom:${a.name}`}>
+                {a.label || a.name}
+                {a.phy_type ? ` — ${a.phy_type}` : ""}
+              </option>
+            ))}
           </optgroup>
         )}
       </select>

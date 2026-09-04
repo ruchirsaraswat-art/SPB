@@ -8,9 +8,11 @@ import { saveSettings } from "./api";
 // takes effect on the next request - no restart. Existing data is never
 // moved: previous locations are listed and stay readable.
 //
-// Focus mode (2026-08-27, user scope decision): the "Focus: DDR AFE only"
+// Focus mode (2026-08-27, user scope decision): the "Focus: AFE only"
 // checkbox. State + persistence (localStorage) live in App.jsx; this panel
 // just renders the control. Applies immediately, no save button needed.
+// It hides the non-AFE workspaces only - it no longer restricts the PHY
+// type (2026-08-31: pinning the selector to DDR just read as broken).
 export default function SettingsPanel({ settings, onSaved, onClose, error: loadError, focusDdrAfe, onFocusChange }) {
   const [draft, setDraft] = useState(settings?.working_dir || "");
   const [libDraft, setLibDraft] = useState(settings?.libraries_dir || "");
@@ -62,13 +64,13 @@ export default function SettingsPanel({ settings, onSaved, onClose, error: loadE
           checked={!!focusDdrAfe}
           onChange={(e) => onFocusChange?.(e.target.checked)}
         />
-        <span>Focus: DDR AFE only</span>
+        <span>Focus: AFE only</span>
       </label>
       <p className="hint">
-        Narrows the workbench to the DDR PHY analog front end: other PHY types
-        are marked "coming later" and the interface / controller / firmware
-        workspaces are hidden. Nothing is deleted — untick to bring everything
-        back. Applies immediately and persists across reloads.
+        Narrows the workbench to the analog front end: the interface /
+        controller / firmware workspaces are hidden. Every PHY type stays
+        selectable. Nothing is deleted — untick to bring the hidden
+        workspaces back. Applies immediately and persists across reloads.
       </p>
 
       {settings && (

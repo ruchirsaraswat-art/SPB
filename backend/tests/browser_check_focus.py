@@ -8,7 +8,8 @@ chat messages sent, only page loads and clicks.
 
 What it asserts:
   1. Fresh load (clean localStorage -> focus defaults ON): PHY select shows
-     "ddr" with all non-DDR built-ins disabled ("coming later"); the AFE
+     "ddr" while EVERY PHY type stays selectable (focus hides workspaces,
+     not PHY types - changed 2026-08-31); the AFE
      panel is EXPANDED; the interface / digital / firmware workspace
      sections are NOT rendered at all; the overview greys out + disables
      the IF / Controller / Firmware blocks and shows the focus caption;
@@ -77,9 +78,9 @@ def main():
         sel = page.locator(".phy-type-select select")
         check("PHY select shows ddr", sel.input_value() == "ddr", f"got {sel.input_value()!r}")
         disabled_builtins = page.locator(".phy-type-select option[disabled]").count()
-        check("non-DDR built-ins disabled (5)", disabled_builtins >= 5, f"got {disabled_builtins}")
-        coming_later = page.locator(".phy-type-select option[disabled]").first.inner_text()
-        check("'coming later' hint on disabled options", "coming later" in coming_later, repr(coming_later))
+        check("no PHY type is disabled by focus", disabled_builtins == 0, f"got {disabled_builtins}")
+        opts = page.locator(".phy-type-select option").count()
+        check("all built-in PHY types selectable (6)", opts >= 6, f"got {opts}")
 
         check("AFE panel rendered + expanded", panel(page, "afe").count() == 1 and not is_minimized(page, "afe"))
         afe_h3 = page.locator(".phy-selector h3").inner_text()
@@ -129,19 +130,29 @@ def main():
         stored = page.evaluate('localStorage.getItem("focus-ddr-afe")')
         check("localStorage records OFF", stored == "0", f"got {stored!r}")
 
+        # A non-DDR PHY must be selectable, and turning focus back ON must
+        # NOT discard that choice - focus narrows workspaces, not PHY types.
+        sel.select_option("ser-des")
+        page.wait_for_timeout(300)
+        check("non-DDR PHY selectable", sel.input_value() == "ser-des",
+              f"got {sel.input_value()!r}")
+
         open_settings(page)
         focus_checkbox(page).check()
         page.wait_for_timeout(300)
         for ws in HIDDEN_WS:
             check(f"{ws} hidden again after re-toggle", panel(page, ws).count() == 0)
-        check("re-toggle pins ddr", sel.input_value() == "ddr")
+        check("re-toggle keeps the chosen PHY", sel.input_value() == "ser-des",
+              f"got {sel.input_value()!r}")
         check("re-toggle expands AFE", not is_minimized(page, "afe"))
         page.reload()
         page.wait_for_selector('section[data-workspace="afe"]')
         page.wait_for_timeout(300)
         check("reload keeps focus ON", panel(page, "digital").count() == 0)
         check("reload: AFE expanded", not is_minimized(page, "afe"))
-        check("reload: ddr selected", page.locator(".phy-type-select select").input_value() == "ddr")
+        # PHY choice is React state, not persisted - a reload returns to the
+        # default ("ddr" while focus is on). Focus itself does persist.
+        check("reload: back to default PHY", page.locator(".phy-type-select select").input_value() == "ddr")
 
         browser.close()
 

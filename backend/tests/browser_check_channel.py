@@ -122,14 +122,19 @@ def main():
         page.screenshot(path=f"{AUDITS}/2026-08-29-channel-4port.png", full_page=True)
 
         print("[cache] re-importing the same file")
+        # Count BEFORE the re-import: the channel store is the user's real
+        # working dir and may already hold channels from earlier work, so
+        # the property under test is "a cache hit adds no new entry", not an
+        # absolute list length.
+        before = page.locator(".chan-list-item").count()
         page.locator(".chan-file-label input[type=file]").set_input_files(
             str(FIXTURES / "chan_2port.s2p")
         )
         page.wait_for_timeout(1500)
         check("cache hit: no refit progress box", page.locator(".chan-progress").count() == 0)
-        check("cache hit: still just two channels",
-              page.locator(".chan-list-item").count() == 2,
-              str(page.locator(".chan-list-item").count()))
+        check("cache hit: adds no new channel",
+              page.locator(".chan-list-item").count() == before,
+              f"{before} -> {page.locator('.chan-list-item').count()}")
         check("cache hit: metrics still shown", page.locator(".chan-verdict").count() == 1)
 
         print("[focus] spec form still works alongside the panel")

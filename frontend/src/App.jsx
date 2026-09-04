@@ -229,11 +229,13 @@ export default function App() {
     [customArchs, phyType, handleLoadCustomArch]
   );
 
-  // Focus mode toggle (see FOCUS_KEY above). Turning it ON pins the PHY to
-  // DDR, expands the AFE panel and pulls focus back to it (the hidden
-  // workspaces can't stay focused - the chat sidebar follows focus).
-  // Turning it OFF just re-renders the hidden panels; their minimize state
-  // and the DDR selection are left as they are.
+  // Focus mode toggle (see FOCUS_KEY above). Turning it ON expands the AFE
+  // panel and pulls focus back to it (the hidden workspaces can't stay
+  // focused - the chat sidebar follows focus). Turning it OFF just
+  // re-renders the hidden panels, leaving their minimize state alone.
+  // It does NOT touch the selected PHY type in either direction: focus
+  // narrows WORKSPACES, not PHY types (2026-08-31 - it used to force the
+  // choice back to DDR, which silently discarded the user's selection).
   const [focusDdrAfe, setFocusDdrAfe] = useState(loadFocusMode);
   const handleFocusChange = useCallback((on) => {
     setFocusDdrAfe(on);
@@ -243,8 +245,6 @@ export default function App() {
       // localStorage unavailable - the toggle just won't persist
     }
     if (on) {
-      setArchChoice("ddr");
-      setPhyType("ddr");
       setMinimized((m) => (m.afe ? { ...m, afe: false } : m));
       setFocusedWorkspace("afe");
     }
@@ -578,7 +578,6 @@ export default function App() {
                     archChoice={archChoice}
                     customArchs={customArchs}
                     onChange={handlePhyChoice}
-                    focusDdrOnly={focusDdrAfe}
                   />
                 </span>
                 <span className="workspace-head-right">

@@ -8,12 +8,12 @@
 // can be off-screen, so focus alone looked like a no-op). No state of its
 // own - the real content lives in the three workspaces.
 
-// Focus mode (2026-08-27, "Focus: DDR AFE only"): the depiction keeps all
+// Focus mode (2026-08-27, "Focus: AFE only"): the depiction keeps all
 // four blocks (the PHY is still honestly a PHY) but the IF / Controller /
 // Firmware blocks are greyed out and disabled - their workspaces are not
 // rendered while focus is on, so clicking would go nowhere. The hint on
 // each says how to bring them back (Settings toggle).
-const FOCUS_HINT = 'Out of scope while "Focus: DDR AFE only" is on — toggle it off in Settings to work on this';
+const FOCUS_HINT = 'Out of scope while "Focus: AFE only" is on — toggle it off in Settings to work on this';
 
 export default function PhyOverviewPanel({ phyType, focusedWorkspace, onFocus, focusDdrAfe = false }) {
   return (
@@ -88,8 +88,8 @@ export default function PhyOverviewPanel({ phyType, focusedWorkspace, onFocus, f
       </p>
       {focusDdrAfe && (
         <p className="phy-overview-caption focus-caption">
-          Focus: DDR AFE only — interface, controller and firmware workspaces
-          are hidden (coming later). Toggle off in Settings to restore them.
+          Focus: AFE only — interface, controller and firmware workspaces are
+          hidden. Toggle off in Settings to restore them.
         </p>
       )}
     </div>
