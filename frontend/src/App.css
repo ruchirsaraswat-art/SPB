@@ -848,6 +848,36 @@ button:disabled {
   margin: 0;
 }
 
+.xschem-live-actions {
+  margin-top: 8px;
+}
+
+.xschem-live-session {
+  margin-top: 10px;
+}
+
+.xschem-live-canvas {
+  width: 100%;
+  background: #000;
+  border-radius: 8px;
+  border: 1px solid #333a48;
+  overflow: hidden;
+  cursor: default;
+  line-height: 0; /* no baseline gap under the inline canvas element */
+}
+
+.xschem-live-canvas canvas {
+  /* !important: noVNC sets its OWN inline width/height style on the canvas
+     element (even with rfb.scaleViewport = false, it inlines the native
+     1280x800 size) - inline styles otherwise always beat an external
+     stylesheet rule regardless of selector specificity, so without this the
+     canvas renders at full native size and gets clipped by this container's
+     overflow:hidden instead of scaling down to fit. */
+  width: 100% !important;
+  height: auto !important;
+  display: block;
+}
+
 /* "Add block" prompt row in the diagram header */
 .arch-add-block {
   display: flex;

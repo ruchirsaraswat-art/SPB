@@ -18,6 +18,7 @@ or repeated runs never clobber each other or the user's existing
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
@@ -27,15 +28,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
+from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 import arch_chat as arch_chat_mod
 import auth as auth_mod
 import channels as channels_mod
+import xschem_session as xschem_session_mod
 import fw_chat as fw_chat_mod
 import fw_generate as fw_generate_mod
 import if_chat as if_chat_mod
@@ -89,6 +92,7 @@ from schematics import (
     display_status,
     launch_for_resolved,
     resolve_schematic,
+    sch_and_cwd_for_resolved,
     validate_topology_name,
 )
 from topologies import (
@@ -203,6 +207,14 @@ def _on_startup() -> None:
     # Channels are listed live from disk (like libraries), so there is no
     # registry to load - only fits orphaned by a killed backend to repair.
     _repair_orphaned_channels()
+    # Same idea for interactive xschem-over-VNC sessions (see
+    # backend/xschem_session.py): any Xvfb/xschem/x11vnc left running by a
+    # previously-killed backend process is, by definition, orphaned (this
+    # fresh process's in-memory session registry starts empty, so nothing
+    # will ever proxy their VNC traffic again) - kill them and start the
+    # idle-reaper thread for sessions started from here on.
+    xschem_session_mod.cleanup_orphans_on_startup()
+    xschem_session_mod.start_background_reaper()
     # Print the shared-secret token (and a ready-to-paste URL carrying it) so
     # a fresh install/first run has an obvious way to find it - the token
     # itself only ever lives in the settings file / ANALOG_SPEC_TOOL_TOKEN
@@ -1829,6 +1841,159 @@ def open_topology_schematic(body: SchematicOpenRequest):
         raise HTTPException(status_code=409, detail=str(exc)) from None
     except LaunchFailed as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from None
+
+
+# ---------------------------------------------------------------------------
+# Interactive xschem-over-VNC sessions (2026-09 remote-access spec): the
+# browser-reachable alternative to /api/schematic/open above, for anyone
+# reaching this tool over Tailscale/remotely instead of sitting at this
+# machine's own desktop. See backend/xschem_session.py's module docstring for
+# the full architecture and SECURITY MODEL - summary: x11vnc binds
+# 127.0.0.1 ONLY, the WebSocket proxy route below re-implements the same
+# shared-secret auth check every other /api/* route gets (Starlette HTTP
+# middleware, including the `_auth_gate` above, never runs for "websocket"
+# scope connections - only "http" ones), and a fresh per-session VNC password
+# guards the loopback port itself as defense in depth.
+
+
+@app.get("/api/xschem/prereqs")
+def xschem_prereqs():
+    """Whether this machine can run the feature at all right now (Xvfb +
+    xschem + x11vnc all on PATH) - checked live, not cached, so the frontend
+    enables the action the moment x11vnc gets installed with no backend
+    restart needed."""
+    return xschem_session_mod.prereqs_status()
+
+
+class XschemSessionRequest(BaseModel):
+    topology: str = Field(
+        description="Topology whose resolved schematic to open an interactive VNC session on"
+    )
+
+
+@app.post("/api/xschem/sessions")
+def start_xschem_session(body: XschemSessionRequest):
+    """Start (or reuse) a browser-reachable interactive xschem session on the
+    topology's resolved schematic - re-resolved server-side exactly like
+    /api/schematic/open, so the client can never point this at an arbitrary
+    path. Returns a one-time `vnc_password` the frontend hands to its
+    embedded noVNC client; never persisted to disk, never returned again by
+    GET /api/xschem/sessions/{id}."""
+    try:
+        validate_topology_name(body.topology)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    with _runs_lock:
+        runs = list(_runs.values())
+    resolved = resolve_schematic(body.topology, runs)
+    try:
+        sch_path, cwd = sch_and_cwd_for_resolved(resolved)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    label = (
+        f"{resolved['library']}/{resolved['cell']}" if resolved.get("source") == "library"
+        else f"run {resolved.get('run_id')}"
+    )
+    try:
+        return xschem_session_mod.start_session(cwd, sch_path, label)
+    except xschem_session_mod.PrereqMissing as exc:
+        raise HTTPException(status_code=409, detail=exc.status.get("message", str(exc))) from None
+    except xschem_session_mod.TooManySessions as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from None
+    except xschem_session_mod.LaunchFailed as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from None
+
+
+@app.get("/api/xschem/sessions")
+def list_xschem_sessions():
+    return xschem_session_mod.list_sessions()
+
+
+@app.get("/api/xschem/sessions/{session_id}")
+def get_xschem_session(session_id: str):
+    info = xschem_session_mod.get_session(session_id)
+    if info is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return info
+
+
+@app.post("/api/xschem/sessions/{session_id}/stop")
+def stop_xschem_session(session_id: str):
+    if not xschem_session_mod.stop_session(session_id):
+        raise HTTPException(status_code=404, detail="session not found")
+    return {"status": "stopped"}
+
+
+@app.websocket("/api/xschem/sessions/{session_id}/ws")
+async def xschem_session_ws(websocket: WebSocket, session_id: str):
+    """Proxies raw bytes between the browser's WebSocket and x11vnc's
+    loopback TCP port for this session. noVNC's wire format IS the RFB
+    protocol carried unmodified inside WebSocket binary frames, so this
+    never has to understand VNC/RFB itself - just pipe bytes both ways until
+    either side closes.
+
+    SECURITY: this route is NOT covered by the `_auth_gate` HTTP middleware
+    above - Starlette middleware registered via `@app.middleware("http")`
+    only ever runs for "http" scope ASGI connections, never "websocket" ones.
+    So the exact same shared-secret check (header / cookie / ?token= query
+    param, loopback-exempt the same way - see backend/auth.py) is done
+    explicitly, HERE, before `.accept()` is ever called: an unauthenticated
+    peer's handshake is rejected outright and never reaches x11vnc, or even
+    a real session lookup."""
+    token = auth_token()
+    if not auth_mod.is_authorized(websocket, token):
+        await websocket.close(code=4401)
+        return
+    endpoint = xschem_session_mod.get_vnc_endpoint(session_id)
+    if endpoint is None:
+        await websocket.close(code=4404)
+        return
+    await websocket.accept()
+    xschem_session_mod.touch_connect(session_id)
+    host, port = endpoint
+    try:
+        reader, writer = await asyncio.open_connection(host, port)
+    except OSError:
+        xschem_session_mod.touch_disconnect(session_id)
+        await websocket.close(code=1011)
+        return
+
+    async def ws_to_tcp() -> None:
+        try:
+            while True:
+                data = await websocket.receive_bytes()
+                writer.write(data)
+                await writer.drain()
+        except (WebSocketDisconnect, RuntimeError, OSError):
+            pass
+
+    async def tcp_to_ws() -> None:
+        try:
+            while True:
+                data = await reader.read(65536)
+                if not data:
+                    return
+                if websocket.client_state != WebSocketState.CONNECTED:
+                    return
+                await websocket.send_bytes(data)
+        except (RuntimeError, OSError):
+            pass
+
+    tasks = [asyncio.ensure_future(ws_to_tcp()), asyncio.ensure_future(tcp_to_ws())]
+    try:
+        _done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for t in pending:
+            t.cancel()
+        for t in pending:
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+    finally:
+        writer.close()
+        xschem_session_mod.touch_disconnect(session_id)
+        if websocket.client_state == WebSocketState.CONNECTED:
+            await websocket.close()
 
 
 @app.get("/api/runs")

@@ -93,6 +93,15 @@ _SUBDIRS = {
     # directory name IS the fit cache key, so this subtree doubles as the
     # cache: an unchanged file is never refitted.
     "channels": "channels",
+    # Interactive xschem-over-VNC session bookkeeping (2026-09 remote-access
+    # spec): one subdir per live session (logs + a session.json describing
+    # its Xvfb/xschem/x11vnc PIDs), so a killed backend can find and reap
+    # orphaned processes on the next startup - see backend/xschem_session.py.
+    # Purely transient: unlike the other subtrees above, this is never
+    # searched across previous working dirs (a session cannot outlive the
+    # backend process that proxies its VNC traffic, so old sessions are
+    # nothing but stale PIDs to clean up, not data to keep browsing).
+    "xschem_sessions": "xschem_sessions",
 }
 
 
@@ -222,6 +231,10 @@ def spec_docs_root() -> Path:
 
 def channels_root() -> Path:
     return _current_root("channels")
+
+
+def xschem_sessions_root() -> Path:
+    return _current_root("xschem_sessions")
 
 
 def _all_roots(kind: str) -> list[Path]:

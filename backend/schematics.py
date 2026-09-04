@@ -305,13 +305,15 @@ def launch_xschem(sch_path: Path, cwd: Path) -> dict[str, Any]:
     )
 
 
-def launch_for_resolved(resolved: dict[str, Any]) -> dict[str, Any]:
-    """Map a resolve_schematic() result onto a concrete .sch path + cwd and
-    launch xschem there. The cwd comes from the candidate's own recorded
-    directory ("dir", set server-side during resolution - which may be under
-    a PREVIOUS working dir's tree for old data; callers must never feed this
-    a client-supplied dict). ValueError when the resolved result has no .sch
-    view (PNG-only cell) - callers turn that into a 404/409, not a crash."""
+def sch_and_cwd_for_resolved(resolved: dict[str, Any]) -> tuple[Path, Path]:
+    """Map a resolve_schematic() result onto a concrete .sch path + cwd,
+    without launching anything - shared by launch_for_resolved (local X11
+    "Open in xschem") and xschem_session.py (browser-reachable VNC session).
+    The cwd comes from the candidate's own recorded directory ("dir", set
+    server-side during resolution - which may be under a PREVIOUS working dir's
+    tree for old data; callers must never feed this a client-supplied dict).
+    ValueError when the resolved result has no .sch view (PNG-only cell) or
+    wasn't found at all - callers turn that into a 404/409, not a crash."""
     if not resolved.get("found"):
         raise ValueError(EMPTY_STATE_MESSAGE)
     sch = resolved.get("sch")
@@ -321,4 +323,12 @@ def launch_for_resolved(resolved: dict[str, Any]) -> dict[str, Any]:
             "so there is nothing for xschem to open"
         )
     cwd = Path(resolved["dir"])
-    return launch_xschem(cwd / sch, cwd)
+    return cwd / sch, cwd
+
+
+def launch_for_resolved(resolved: dict[str, Any]) -> dict[str, Any]:
+    """Map a resolve_schematic() result onto a concrete .sch path + cwd and
+    launch xschem there (detached, on the backend's local X display - see
+    launch_xschem). ValueError propagates from sch_and_cwd_for_resolved."""
+    sch_path, cwd = sch_and_cwd_for_resolved(resolved)
+    return launch_xschem(sch_path, cwd)

@@ -259,6 +259,67 @@ export async function openTopologySchematic(topology) {
   return body;
 }
 
+// Interactive xschem-over-VNC sessions (2026-09 remote-access spec): the
+// browser-reachable alternative to openTopologySchematic above, for anyone
+// reaching this tool remotely (Tailscale etc) instead of sitting at the
+// backend machine's own desktop. See backend/xschem_session.py.
+export async function xschemPrereqs() {
+  const res = await apiFetch(`${API_BASE}/api/xschem/prereqs`);
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Failed to check xschem prerequisites"));
+  }
+  return res.json();
+}
+
+// Starts (or reuses) a session for the topology's resolved schematic.
+// Returns {session_id, vnc_password, ...} - vnc_password is a ONE-TIME value
+// (never returned again by getXschemSession), handed straight to the noVNC
+// client so the RFB handshake needs no separate user prompt.
+export async function startXschemSession(topology) {
+  const res = await apiFetch(`${API_BASE}/api/xschem/sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ topology }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(body.detail || `Failed to start xschem session: ${res.status}`);
+  }
+  return body;
+}
+
+export async function getXschemSession(sessionId) {
+  const res = await apiFetch(`${API_BASE}/api/xschem/sessions/${encodeURIComponent(sessionId)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Failed to check xschem session"));
+  }
+  return res.json();
+}
+
+export async function stopXschemSession(sessionId) {
+  const res = await apiFetch(`${API_BASE}/api/xschem/sessions/${encodeURIComponent(sessionId)}/stop`, {
+    method: "POST",
+  });
+  if (!res.ok && res.status !== 404) {
+    throw new Error(await apiErrorMessage(res, "Failed to stop xschem session"));
+  }
+  return true;
+}
+
+// WebSocket URL for the noVNC client - carries the auth token as a ?token=
+// query param because the browser's native WebSocket API cannot set custom
+// headers (X-Auth-Token, what every other call above uses); the backend's
+// shared-secret gate already accepts a valid query token on any path (see
+// backend/auth.py), the same mechanism the very first page load uses.
+export function xschemWsUrl(sessionId) {
+  const base = API_BASE || window.location.origin;
+  const wsBase = base.replace(/^http/, "ws");
+  const token = getAuthToken();
+  const q = token ? `?token=${encodeURIComponent(token)}` : "";
+  return `${wsBase}/api/xschem/sessions/${encodeURIComponent(sessionId)}/ws${q}`;
+}
+
 // Tool settings (cycle 5): the working directory the tool creates its data
 // under (libraries/, runs/, research_runs/), with derived sub-paths and any
 // previous locations that still hold data.

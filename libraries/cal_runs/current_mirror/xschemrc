@@ -1,5 +1,22 @@
 # Project-local xschemrc: pull in the sky130 PDK xschem libraries.
 if {![info exists env(PDK_ROOT)]} { set env(PDK_ROOT) $env(HOME)/.volare }
 source $env(PDK_ROOT)/sky130A/libs.tech/xschem/xschemrc
+# The sky130 PDK's own xschemrc unconditionally turns on xschem's
+# built-in 'bespice wave' TCP listener (bespice_listen_port 2022) for
+# its waveform-viewer integration - and xschem binds that listener on
+# EVERY interface (0.0.0.0/::), not just loopback, with zero
+# authentication (empirically confirmed 2026-09: `ss -ltnp` shows
+# 0.0.0.0:2022 the moment xschem starts with the PDK's default
+# xschemrc sourced). Any interactive xschem this tool launches -
+# whether the older local-display 'Open in xschem' or the
+# browser-embedded VNC session (backend/xschem_session.py) - would
+# otherwise be reachable by that separate, unauthenticated channel to
+# anyone who can route to this machine (e.g. every other host on the
+# tailnet), independent of and bypassing this tool's own auth gate
+# entirely. Disable it: 'unset' (not 'set ... 0') because xschem's
+# own startup code only starts the listener when the variable EXISTS
+# (the PDK xschemrc's own comment: 'default: not enabled').
+unset -nocomplain bespice_listen_port
+unset -nocomplain xschem_listen_port
 # SPB design libraries (hierarchical lib/cell/view directory tree).
 append XSCHEM_LIBRARY_PATH :/home/rsarasw1/analog-spec-tool/libraries
