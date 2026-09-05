@@ -244,6 +244,32 @@ export async function resolveSchematic(topology) {
   return res.json();
 }
 
+// Results sub-window: backend-resolved "best results for this topology" -
+// same filed-cell-beats-latest-run priority as resolveSchematic, just
+// carrying measurements/logs/waveform-availability instead of a rendered
+// view. Always resolves to {found:false, message} rather than a 404 when
+// nothing exists yet - the frontend renders that verbatim.
+export async function resolveResults(topology) {
+  const res = await apiFetch(`${API_BASE}/api/results/resolve/${encodeURIComponent(topology)}`);
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Failed to resolve results"));
+  }
+  return res.json();
+}
+
+// Parsed ngspice ascii .raw waveform data for one artifact, from whichever
+// base URL the resolved result carried (a run's or a library cell's -
+// resolve_results already picked the right one server-side, this just
+// appends the filename). See backend/rawfile.py for supported-format/size
+// caveats surfaced as the thrown error message on a non-2xx response.
+export async function fetchWaveform(waveformUrlBase, name) {
+  const res = await apiFetch(`${API_BASE}${waveformUrlBase}${encodeURIComponent(name)}`);
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, `Failed to load waveform ${name}`));
+  }
+  return res.json();
+}
+
 // Spawn interactive xschem on the topology's resolved schematic (backend
 // re-resolves; 409 when no X display is reachable at click time).
 export async function openTopologySchematic(topology) {

@@ -2338,3 +2338,134 @@ button:disabled {
 .chan-contract code {
   word-break: break-all;
 }
+
+/* Results sub-window (docked under SchematicPanel, same right-hand column) -
+   reuses .schematic-panel/.schematic-panel-head/.schematic-panel-body/
+   .metrics-grid/.models-block/.model-row/.notes-box/.artifacts-block as-is;
+   this block only adds what's genuinely new. */
+.drawing-side .results-panel-slot {
+  margin-top: 16px;
+}
+
+.results-status-line {
+  font-weight: 600;
+  margin: 0 0 6px;
+}
+
+.results-status-line.ok {
+  color: #4ade80;
+}
+
+.results-status-line.bad {
+  color: #f87171;
+}
+
+.models-block h4,
+.meas-block h4,
+.artifacts-block h4 {
+  margin: 14px 0 6px;
+  font-size: 0.9rem;
+  color: #c7cdd6;
+}
+
+.meas-log {
+  background: #1c1f28;
+  border: 1px solid #2a2f3a;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin: 10px 0;
+}
+
+.meas-log-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.meas-log-head a {
+  color: #60a5fa;
+  font-size: 0.85rem;
+}
+
+/* Waveform viewer (client-side SVG plot, no server-side plotting dep). */
+.waveform-viewer {
+  margin-top: 14px;
+}
+
+.waveform-file-picker {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 0.85rem;
+  color: #9aa4b2;
+}
+
+.waveform-file-picker select {
+  display: block;
+  margin-top: 4px;
+}
+
+.waveform-signal-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 0.85rem;
+}
+
+.waveform-signal-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.waveform-plot-svg {
+  width: 100%;
+  height: auto;
+  background: #0f131a;
+  border: 1px solid #2a2f3a;
+  border-radius: 8px;
+}
+
+.waveform-plot-bg {
+  fill: #0f131a;
+}
+
+.waveform-axis {
+  stroke: #333a48;
+  stroke-width: 1;
+}
+
+.waveform-axis-label {
+  fill: #6b7280;
+  font-size: 9px;
+}
+
+.waveform-trace {
+  fill: none;
+  stroke-width: 1.6;
+}
+
+.waveform-legend {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 0.8rem;
+  color: #c7cdd6;
+}
+
+.waveform-legend-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+.waveform-empty {
+  margin-top: 10px;
+}

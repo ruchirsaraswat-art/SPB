@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import SpecForm from "./SpecForm";
 import ResearchView from "./ResearchView";
+import ResultsPanel from "./ResultsPanel";
 import ResultsView from "./ResultsView";
 import LogPanel from "./LogPanel";
 import SchematicPanel from "./SchematicPanel";
@@ -40,12 +41,15 @@ const WORKSPACES = [
 
 // Focus mode (user scope decision, 2026-08-27): "let us focus on AFE only
 // and only on DDR design to start with". PRESENTATION-LEVEL ONLY - no code
-// or feature is removed: while the toggle (Settings panel, "Focus: DDR AFE
+// or feature is removed: while the toggle (Settings panel, "Focus: AFE
 // only") is on, the interface/controller/firmware workspaces are simply not
-// rendered, the PHY type pull-down pins to DDR (others disabled, "coming
-// later"), the overview greys out the non-AFE blocks, and the AFE panel
+// rendered, the overview greys out the non-AFE blocks, and the AFE panel
 // starts expanded. Toggling it off restores everything. Default ON;
 // persisted in localStorage like the other per-UI state in this app.
+// It narrows WORKSPACES only - every PHY type stays selectable (2026-08-31:
+// it used to pin the pull-down to DDR, which just read as broken). The
+// localStorage key keeps its original "focus-ddr-afe" name so existing
+// browsers keep their setting.
 const FOCUS_KEY = "focus-ddr-afe";
 function loadFocusMode() {
   try {
@@ -688,6 +692,15 @@ export default function App() {
             {archView.topology && (
               <div className="panel schematic-panel-slot">
                 <SchematicPanel
+                  topology={archView.topology}
+                  topologyLabel={archView.topology_label}
+                  blockId={archView.selected_block}
+                />
+              </div>
+            )}
+            {archView.topology && (
+              <div className="panel schematic-panel-slot results-panel-slot">
+                <ResultsPanel
                   topology={archView.topology}
                   topologyLabel={archView.topology_label}
                   blockId={archView.selected_block}

@@ -100,6 +100,8 @@ from schematics import (
     sch_and_cwd_for_resolved,
     validate_topology_name,
 )
+from rawfile import RawTooLarge, UnsupportedRawFormat, parse_ascii_raw
+from results import resolve_results
 from topologies import (
     ALL_TOPOLOGY_VALUES,
     CUSTOM_TOPOLOGY_VALUE,
@@ -1819,6 +1821,21 @@ def resolve_topology_schematic(topology: str):
     return resolved
 
 
+@app.get("/api/results/resolve/{topology}")
+def resolve_topology_results(topology: str):
+    """Best available RESULTS for a topology (results sub-window, docked
+    alongside the schematic one): same filed-cell-beats-latest-run priority
+    as GET /api/schematic/resolve, just carrying measurements/logs/waveform-
+    availability instead of a rendered view - see backend/results.py."""
+    try:
+        validate_topology_name(topology)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    with _runs_lock:
+        runs = list(_runs.values())
+    return resolve_results(topology, runs)
+
+
 class SchematicOpenRequest(BaseModel):
     topology: str = Field(description="Topology whose resolved schematic to open in xschem")
 
@@ -2141,6 +2158,49 @@ def get_run_file(run_id: str, name: str):
     if not path.exists():
         raise HTTPException(status_code=404, detail="file not found")
     return FileResponse(path)
+
+
+def _parse_raw_or_error(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="waveform file not found")
+    try:
+        return parse_ascii_raw(path)
+    except RawTooLarge as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from None
+    except UnsupportedRawFormat as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+
+@app.get("/api/runs/{run_id}/waveform/{name}")
+def get_run_waveform(run_id: str, name: str):
+    """Parsed ngspice ascii .raw data for one run's waveform file (results
+    sub-window, waveform half) - see backend/rawfile.py for the parser and
+    its supported-format/size caveats."""
+    run_dir = _find_run_dir(run_id)
+    if run_dir is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    if "/" in name or "\\" in name or name in (".", ".."):
+        raise HTTPException(status_code=400, detail="invalid filename")
+    path = (run_dir / name).resolve()
+    if run_dir.resolve() not in path.parents:
+        raise HTTPException(status_code=400, detail="invalid path")
+    return _parse_raw_or_error(path)
+
+
+@app.get("/api/libraries/{library}/{cell}/waveform/{name}")
+def get_library_waveform(library: str, cell: str, name: str):
+    """Parsed ngspice ascii .raw data for one filed library cell's waveform
+    file - same root-search-across-libraries-roots as GET .../file/{name}."""
+    for part in (library, cell, name):
+        if "/" in part or "\\" in part or part in (".", ".."):
+            raise HTTPException(status_code=400, detail="invalid path component")
+    for root in all_libraries_roots():
+        path = (root / library / cell / name).resolve()
+        if root.resolve() not in path.parents:
+            raise HTTPException(status_code=400, detail="invalid path")
+        if path.is_file():
+            return _parse_raw_or_error(path)
+    raise HTTPException(status_code=404, detail="waveform file not found")
 
 
 # ---------------------------------------------------------------------------

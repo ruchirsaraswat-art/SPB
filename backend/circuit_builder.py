@@ -675,6 +675,19 @@ corner in any testbench `.lib` include.
    these numbers, report exactly what ngspice measured. If it does not
    converge, say so plainly, include the ngspice error output, and still
    complete steps 7-8 with whatever partial information you have.
+   If the analysis is a sweep over time or frequency (`.tran`/`.ac`/`.dc`,
+   as opposed to a single `.op` point), ALSO preserve the waveform for later
+   plotting: in the same `.control` block, before or after the analysis
+   command, add `set filetype=ascii` and then
+   `write <circuit>_tb.raw <signal1> <signal2> ...` naming only the handful
+   of nodes actually relevant to verifying the spec (inputs, outputs, and at
+   most 1-2 key internal nodes - not every node in the circuit). Keep the
+   file small: choose your analysis's print/step size so the sweep has on
+   the order of 1000-3000 points total (e.g. for a `.tran`, set the print
+   step to roughly (stop time)/2000) - do NOT dump a fine-stepped sweep with
+   tens of thousands of points, the resulting file should typically be well
+   under a few MB. If nothing in this run is a time/frequency sweep, skip
+   this - there is nothing to plot.
 7. Save the full ngspice run output to a file named `sim.log` in this
    directory.
 8. As the LAST thing you do, write a file named exactly `summary.json` in
@@ -703,6 +716,8 @@ corner in any testbench `.lib` include.
      "netlist_file": "<the netlisted .spice filename you actually wrote>",
      "testbench_file": "<the _tb.spice testbench netlist ngspice actually ran>",{tb_sch_json_line}
      "sim_log_file": "sim.log",
+     "waveform_file": "<the _tb.raw file you wrote per step 6, if this run had
+       a time/frequency sweep to preserve - otherwise null>",
      "notes": "<any caveats, e.g. non-convergence, an assumption you made for
        an unspecified spec value, anything you could not verify and why>"
    }}
@@ -1442,6 +1457,7 @@ def evaluate_summary(
     for key in (
         "schematic_png", "netlist_file", "testbench_file", "testbench_sch_file",
         "sim_log_file", "schematic_file", "symbol_file", "dc_log_file", "top_file",
+        "waveform_file",
     ):
         fname = summary.get(key)
         if fname:
