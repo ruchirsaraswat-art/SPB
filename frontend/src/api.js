@@ -325,11 +325,11 @@ export async function createBlankSchematic(library, cell, topology, label) {
 // Live xschem session on a SPECIFIC library cell (not topology-resolved) -
 // the counterpart to startXschemSession above for a cell resolveSchematic
 // can't find yet (freshly created, or not captured since the last edit).
-export async function startXschemCellSession(library, cell) {
+export async function startXschemCellSession(library, cell, resolution) {
   const res = await apiFetch(`${API_BASE}/api/xschem/sessions/cell`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ library, cell }),
+    body: JSON.stringify(resolution ? { library, cell, resolution } : { library, cell }),
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -366,19 +366,52 @@ export async function xschemPrereqs() {
   return res.json();
 }
 
+// The fixed preset resolution list (and default) a NEW live session can be
+// started at - {allowed: ["1280x800", ...], default: "1600x1000"}. Kept
+// server-side (xschem_session.ALLOWED_RESOLUTIONS is the single source of
+// truth) rather than duplicated as a frontend literal.
+export async function xschemResolutions() {
+  const res = await apiFetch(`${API_BASE}/api/xschem/resolutions`);
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Failed to fetch xschem resolution presets"));
+  }
+  return res.json();
+}
+
 // Starts (or reuses) a session for the topology's resolved schematic.
 // Returns {session_id, vnc_password, ...} - vnc_password is a ONE-TIME value
 // (never returned again by getXschemSession), handed straight to the noVNC
-// client so the RFB handshake needs no separate user prompt.
-export async function startXschemSession(topology) {
+// client so the RFB handshake needs no separate user prompt. `resolution`
+// (WxH, one of the presets from xschemResolutions()) only takes effect when
+// actually starting a NEW session - ignored if one is already running for
+// this schematic (use restartXschemSession to change a live session's size).
+export async function startXschemSession(topology, resolution) {
   const res = await apiFetch(`${API_BASE}/api/xschem/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ topology }),
+    body: JSON.stringify(resolution ? { topology, resolution } : { topology }),
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(body.detail || `Failed to start xschem session: ${res.status}`);
+  }
+  return body;
+}
+
+// Restarts a live session at a NEW resolution - the "resize the display"
+// lever. DESTRUCTIVE: kills the old Xvfb/xschem/x11vnc (and, with them, any
+// unsaved xschem work) and starts a fresh session on the exact same
+// schematic file. Callers MUST get explicit user confirmation before
+// calling this - it does not prompt or check for unsaved work itself.
+export async function restartXschemSession(sessionId, resolution) {
+  const res = await apiFetch(`${API_BASE}/api/xschem/sessions/${encodeURIComponent(sessionId)}/restart`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ resolution }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(body.detail || `Failed to restart xschem session: ${res.status}`);
   }
   return body;
 }

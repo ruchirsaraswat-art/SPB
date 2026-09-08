@@ -114,6 +114,36 @@ REAP_INTERVAL_S = 30
 
 X11_SOCKET_DIR = Path("/tmp/.X11-unix")
 
+# --- display resolution (2026-09 resize feature) ------------------------------
+#
+# Xvfb's RANDR implementation on this machine is a stub - `xrandr --newmode`/
+# `--fb` cannot resize a running display (verified empirically). So unlike a
+# real X server, the ONLY way to change a session's drawing area is to kill
+# its Xvfb and start a new, bigger one - see restart_session() below. That is
+# a genuinely destructive operation (kills xschem, so any unsaved on-canvas
+# work is lost) and callers (backend/main.py's routes) must never do it
+# silently - the frontend gets explicit user confirmation first.
+#
+# A short, fixed preset list (rather than free-form WxH) keeps this a "pick a
+# bigger box" decision, not a way to wedge Xvfb with a pathological size.
+ALLOWED_RESOLUTIONS = ("1280x800", "1600x1000", "1920x1200", "2560x1600")
+# More generous than the original hardcoded 1280x800 default - safe (Xvfb's
+# memory cost for a bigger virtual framebuffer is negligible) and gives
+# xschem noticeably more drawing area out of the box.
+DEFAULT_RESOLUTION = "1600x1000"
+
+
+def validate_resolution(resolution: str) -> tuple[int, int]:
+    """Parse+validate a "WxH" resolution string, returning (width, height).
+    Raises ValueError (not LaunchFailed - this is a client input-validation
+    error, not a launch-time failure) if it isn't one of ALLOWED_RESOLUTIONS."""
+    if resolution not in ALLOWED_RESOLUTIONS:
+        raise ValueError(
+            f"invalid resolution {resolution!r} - choose one of: {', '.join(ALLOWED_RESOLUTIONS)}"
+        )
+    w_str, h_str = resolution.split("x")
+    return int(w_str), int(h_str)
+
 REQUIRED_BINARIES = ("Xvfb", "xschem", "x11vnc")
 
 
@@ -166,6 +196,7 @@ class SessionInfo:
     display_num: int
     vnc_port: int
     vnc_password: str
+    resolution: str
     created_at: str
     last_active_at: str
     xvfb_pid: int
@@ -208,6 +239,7 @@ def _public(info: SessionInfo) -> dict[str, Any]:
         "target_dir": info.target_dir,
         "sch_path": info.sch_path,
         "display": f":{info.display_num}",
+        "resolution": info.resolution,
         "created_at": info.created_at,
         "last_active_at": info.last_active_at,
         "clients": info.clients,
@@ -264,22 +296,33 @@ def _wait_for(predicate, timeout_s: float, interval_s: float = 0.1) -> bool:
     return predicate()
 
 
-def _spawn_xvfb(display_num: int, log_path: Path) -> subprocess.Popen:
+def _spawn_xvfb(display_num: int, log_path: Path, resolution: str = DEFAULT_RESOLUTION) -> subprocess.Popen:
     with open(log_path, "w") as logf:
         return subprocess.Popen(
-            ["Xvfb", f":{display_num}", "-screen", "0", "1280x800x24", "-nolisten", "tcp", "-ac"],
+            ["Xvfb", f":{display_num}", "-screen", "0", f"{resolution}x24", "-nolisten", "tcp", "-ac"],
             stdout=logf,
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
 
 
-def _spawn_xschem(sch_path: Path, cwd: Path, display_num: int, log_path: Path) -> subprocess.Popen:
+def _spawn_xschem(
+    sch_path: Path, cwd: Path, display_num: int, log_path: Path, resolution: str = DEFAULT_RESOLUTION
+) -> subprocess.Popen:
     env = os.environ.copy()
     env["DISPLAY"] = f":{display_num}"
+    w, h = validate_resolution(resolution)
+    # xschem's own Tk toplevel does NOT fill the display by default (there is
+    # no window manager on these throwaway Xvfb displays to do that for it -
+    # it opens at a small fixed 900x600) - `--command` runs a Tcl command
+    # after xschem finishes its own startup, so `wm geometry . <W>x<H>+0+0`
+    # resizes+repositions xschem's actual window to exactly fill whatever
+    # display size Xvfb was given. Verified empirically (2026-09): without
+    # this, a bigger Xvfb buys nothing - xschem just sits in the corner of a
+    # bigger black canvas.
     with open(log_path, "w") as logf:
         return subprocess.Popen(
-            ["xschem", str(sch_path)],
+            ["xschem", "--command", f"wm geometry . {w}x{h}+0+0", str(sch_path)],
             cwd=str(cwd),
             env=env,
             stdout=logf,
@@ -373,13 +416,24 @@ def _kill_pid(pid: int) -> None:
 # --- public API ----------------------------------------------------------------
 
 
-def start_session(cwd: Path, sch_path: Path, label: str) -> dict[str, Any]:
+def start_session(
+    cwd: Path, sch_path: Path, label: str, resolution: str = DEFAULT_RESOLUTION
+) -> dict[str, Any]:
     """Start (or reuse) an interactive xschem-over-VNC session for `sch_path`
     (cwd = its project directory, same convention as
     schematics.launch_xschem). Returns a dict including the one-time
     `vnc_password` the caller hands to the frontend's noVNC client. Raises
+    ValueError for an invalid `resolution` (caller turns that into a 422),
     PrereqMissing / TooManySessions / LaunchFailed - callers turn those into
-    409/429/500 respectively, never a crash."""
+    409/429/500 respectively, never a crash.
+
+    NOTE on reuse: if a session for this exact `sch_path` is already running,
+    it is reused AS-IS regardless of `resolution` - this function never
+    resizes a live session out from under a caller who merely asked to open
+    it again (that would silently kill unsaved xschem work). Changing an
+    existing session's resolution is a deliberate, explicit action - see
+    restart_session()."""
+    validate_resolution(resolution)  # ValueError first - cheap, no I/O, no side effects yet
     status = prereqs_status()
     if not status["available"]:
         raise PrereqMissing(status)
@@ -427,13 +481,13 @@ def start_session(cwd: Path, sch_path: Path, label: str) -> dict[str, Any]:
         info = SessionInfo(
             session_id=session_id, key=key, target_dir=str(cwd), sch_path=str(sch_path),
             label=label, display_num=display_num, vnc_port=port, vnc_password=password,
-            created_at=_now(), last_active_at=_now(),
+            resolution=resolution, created_at=_now(), last_active_at=_now(),
             xvfb_pid=0, xschem_pid=0, x11vnc_pid=0,
         )
         _SESSIONS[session_id] = info
 
     try:
-        xvfb = _spawn_xvfb(display_num, session_dir / "xvfb.log")
+        xvfb = _spawn_xvfb(display_num, session_dir / "xvfb.log", resolution=resolution)
         if not _wait_for(lambda: (X11_SOCKET_DIR / f"X{display_num}").exists() or xvfb.poll() is not None, 5.0):
             _terminate(xvfb)
             raise LaunchFailed(f"Xvfb on display :{display_num} did not come up within 5s")
@@ -441,7 +495,7 @@ def start_session(cwd: Path, sch_path: Path, label: str) -> dict[str, Any]:
             tail = (session_dir / "xvfb.log").read_text()[-800:]
             raise LaunchFailed(f"Xvfb exited immediately (code {xvfb.returncode}): {tail}")
 
-        xschem = _spawn_xschem(sch_path, cwd, display_num, session_dir / "xschem.log")
+        xschem = _spawn_xschem(sch_path, cwd, display_num, session_dir / "xschem.log", resolution=resolution)
         time.sleep(1.0)  # fast-failure window, same convention as schematics.launch_xschem
         if xschem.poll() is not None:
             _terminate(xvfb)
@@ -501,6 +555,41 @@ def stop_session(session_id: str) -> bool:
     if session_json.is_file():
         session_json.unlink()
     return True
+
+
+def restart_session(session_id: str, resolution: str) -> dict[str, Any]:
+    """The "resize the DISPLAY" lever: stop `session_id` (reaping its
+    Xvfb/xschem/x11vnc and freeing its display number + VNC port) and start a
+    brand-new session at `resolution` for the exact same target (cwd/
+    sch_path/label) it was showing. This is DESTRUCTIVE - Xvfb's RANDR is a
+    stub in this environment (verified: `xrandr --newmode`/`--fb` cannot
+    resize a running display), so genuinely changing the drawing area has no
+    live-resize path; it can only be done by killing the old X server, which
+    kills xschem, which means ANY UNSAVED WORK IN THE OLD SESSION IS LOST.
+
+    This function does not itself prompt for confirmation - it trusts the
+    caller (backend/main.py's restart route, in turn trusted to have gotten
+    explicit confirmation from the frontend) that the user has already been
+    warned. xschem exposes no reliable "has unsaved changes" signal this
+    module can poll over its current control surface (no persistent Tcl
+    session channel is kept open to a running xschem today), so no attempt is
+    made to detect/block on that here - only the warning at the UI layer.
+
+    Raises LaunchFailed if `session_id` doesn't exist (nothing to restart),
+    ValueError for an invalid `resolution`, or whatever start_session()
+    itself can raise (PrereqMissing / TooManySessions / LaunchFailed) if the
+    fresh session fails to come up - in that last case the OLD session is
+    already gone (stopped before the new one was attempted), matching the
+    "reap the old session before starting the new one" requirement."""
+    with _lock:
+        info = _SESSIONS.get(session_id)
+        if info is None:
+            raise LaunchFailed(f"session {session_id} not found - it may have already been stopped")
+        cwd = Path(info.target_dir)
+        sch_path = Path(info.sch_path)
+        label = info.label
+    stop_session(session_id)  # reap BEFORE starting the new one, unconditionally
+    return start_session(cwd, sch_path, label, resolution=resolution)
 
 
 def get_session(session_id: str) -> Optional[dict[str, Any]]:

@@ -1904,6 +1904,14 @@ def new_schematic_cell(body: NewCellRequest):
 class CellSessionRequest(BaseModel):
     library: str = Field(description="Library holding the cell to open a live xschem session on")
     cell: str = Field(description="Cell name (must already have a .sch)")
+    resolution: str = Field(
+        default=xschem_session_mod.DEFAULT_RESOLUTION,
+        description=(
+            "Xvfb display resolution as WxH (one of xschem_session.ALLOWED_RESOLUTIONS) for a "
+            "NEW session only - ignored if a session for this cell is already running (use "
+            "POST .../restart to change an existing session's resolution)."
+        ),
+    )
 
 
 @app.post("/api/xschem/sessions/cell")
@@ -1918,7 +1926,11 @@ def start_xschem_cell_session(body: CellSessionRequest):
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
     try:
-        return xschem_session_mod.start_session(cwd, sch_path, f"{body.library}/{body.cell}")
+        return xschem_session_mod.start_session(
+            cwd, sch_path, f"{body.library}/{body.cell}", resolution=body.resolution
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     except xschem_session_mod.PrereqMissing as exc:
         raise HTTPException(status_code=409, detail=exc.status.get("message", str(exc))) from None
     except xschem_session_mod.TooManySessions as exc:
@@ -1973,6 +1985,14 @@ class XschemSessionRequest(BaseModel):
     topology: str = Field(
         description="Topology whose resolved schematic to open an interactive VNC session on"
     )
+    resolution: str = Field(
+        default=xschem_session_mod.DEFAULT_RESOLUTION,
+        description=(
+            "Xvfb display resolution as WxH (one of xschem_session.ALLOWED_RESOLUTIONS) for a "
+            "NEW session only - ignored if a session for this schematic is already running (use "
+            "POST .../restart to change an existing session's resolution)."
+        ),
+    )
 
 
 @app.post("/api/xschem/sessions")
@@ -1999,13 +2019,27 @@ def start_xschem_session(body: XschemSessionRequest):
         else f"run {resolved.get('run_id')}"
     )
     try:
-        return xschem_session_mod.start_session(cwd, sch_path, label)
+        return xschem_session_mod.start_session(cwd, sch_path, label, resolution=body.resolution)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     except xschem_session_mod.PrereqMissing as exc:
         raise HTTPException(status_code=409, detail=exc.status.get("message", str(exc))) from None
     except xschem_session_mod.TooManySessions as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from None
     except xschem_session_mod.LaunchFailed as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from None
+
+
+@app.get("/api/xschem/resolutions")
+def xschem_resolutions():
+    """The fixed preset list the frontend's resolution picker offers, plus
+    which one new sessions default to - kept server-side (not hardcoded in
+    the frontend) so xschem_session.ALLOWED_RESOLUTIONS stays the single
+    source of truth."""
+    return {
+        "allowed": list(xschem_session_mod.ALLOWED_RESOLUTIONS),
+        "default": xschem_session_mod.DEFAULT_RESOLUTION,
+    }
 
 
 @app.get("/api/xschem/sessions")
@@ -2026,6 +2060,38 @@ def stop_xschem_session(session_id: str):
     if not xschem_session_mod.stop_session(session_id):
         raise HTTPException(status_code=404, detail="session not found")
     return {"status": "stopped"}
+
+
+class XschemRestartRequest(BaseModel):
+    resolution: str = Field(description="New Xvfb display resolution (WxH) to restart this session at")
+
+
+@app.post("/api/xschem/sessions/{session_id}/restart")
+def restart_xschem_session(session_id: str, body: XschemRestartRequest):
+    """Apply a NEW display resolution to a live session - the "resize the
+    DISPLAY" lever (as opposed to the frontend's CSS-only view zoom, which
+    needs no backend call at all). This genuinely gives xschem more drawing
+    area, but Xvfb's RANDR is a stub on this machine (verified: no live
+    resize path exists), so it necessarily kills and restarts the whole
+    session (fresh Xvfb + xschem + x11vnc, same schematic file).
+
+    THIS IS DESTRUCTIVE: any unsaved (not Ctrl+S'd) work in the old xschem
+    window is lost the instant this runs. This route does NOT itself prompt
+    or verify anything was saved - it trusts the frontend already got
+    explicit user confirmation before calling it (xschem exposes no
+    reliable "modified" signal this module can poll to check that itself)."""
+    if xschem_session_mod.get_session(session_id) is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    try:
+        return xschem_session_mod.restart_session(session_id, body.resolution)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except xschem_session_mod.PrereqMissing as exc:
+        raise HTTPException(status_code=409, detail=exc.status.get("message", str(exc))) from None
+    except xschem_session_mod.TooManySessions as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from None
+    except xschem_session_mod.LaunchFailed as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from None
 
 
 @app.websocket("/api/xschem/sessions/{session_id}/ws")

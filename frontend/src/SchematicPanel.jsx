@@ -8,10 +8,12 @@ import {
   listLibraries,
   openTopologySchematic,
   resolveSchematic,
+  restartXschemSession,
   startXschemCellSession,
   startXschemSession,
   stopXschemSession,
   xschemPrereqs,
+  xschemResolutions,
   xschemWsUrl,
 } from "./api";
 
@@ -25,6 +27,60 @@ function sanitizeCellName(raw) {
   let s = (raw || "").toLowerCase().replace(/[^a-z0-9_-]/g, "_");
   if (!/^[a-z_]/.test(s)) s = `_${s}`;
   return s.slice(0, 64) || "new_cell";
+}
+
+// --- live-session resize (2026-09): two independent, clearly-separate ------
+// levers - see the UI copy near their controls below for the user-facing
+// explanation of the difference.
+//   A. "View size" - CSS-only, instant, no backend call at all: how big the
+//      EXISTING framebuffer is drawn in the browser (a drag-free
+//      small/medium/large/fit-width preset, plus a real Fullscreen mode via
+//      the browser's Fullscreen API). Never gives xschem more drawing area
+//      - just rescales what's already there, aspect-ratio preserved (see
+//      the CSS: width/height are never both forced, so the canvas's native
+//      aspect ratio always wins - no distortion).
+//   B. "Display resolution" - the actual Xvfb screen size xschem draws
+//      into. Free to pick for a brand-new session; changing it on an
+//      ALREADY-RUNNING session requires restartXschemSession(), which kills
+//      and relaunches the whole session (Xvfb's RANDR can't resize a live
+//      display on this machine) - destructive to anything unsaved in
+//      xschem, so it's gated behind an explicit window.confirm() below.
+const VIEW_SIZE_KEY = "xschem-live-view-size";
+const START_RESOLUTION_KEY = "xschem-live-start-resolution";
+const VIEW_SIZES = ["small", "medium", "large", "fit"];
+const VIEW_SIZE_LABELS = { small: "Small", medium: "Medium", large: "Large", fit: "Fit width" };
+
+function loadViewSize() {
+  try {
+    const v = localStorage.getItem(VIEW_SIZE_KEY);
+    return VIEW_SIZES.includes(v) ? v : "fit";
+  } catch {
+    return "fit"; // localStorage unavailable (private-mode Safari etc.)
+  }
+}
+
+function saveViewSize(size) {
+  try {
+    localStorage.setItem(VIEW_SIZE_KEY, size);
+  } catch {
+    /* not persisted this session */
+  }
+}
+
+function loadStartResolution(fallback) {
+  try {
+    return localStorage.getItem(START_RESOLUTION_KEY) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveStartResolution(resolution) {
+  try {
+    localStorage.setItem(START_RESOLUTION_KEY, resolution);
+  } catch {
+    /* not persisted this session */
+  }
 }
 
 // Schematic sub-window (cycle 4): whenever a block is highlighted in the PHY
@@ -59,6 +115,15 @@ export default function SchematicPanel({ topology, topologyLabel, blockId }) {
   const [liveStatus, setLiveStatus] = useState(null); // {kind: "info"|"error", text}
   const rfbRef = useRef(null);
   const canvasHostRef = useRef(null);
+
+  // --- resize state (2026-09) - see the two-levers comment above --------
+  const [resolutions, setResolutions] = useState(null); // {allowed: [...], default}
+  const [startResolution, setStartResolution] = useState(""); // picked for the NEXT new session
+  const [viewSize, setViewSize] = useState(loadViewSize); // "small"|"medium"|"large"|"fit", CSS-only
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [resizeChoice, setResizeChoice] = useState(""); // dropdown value for restarting a LIVE session
+  const [resizeBusy, setResizeBusy] = useState(false);
+  const [resizeMsg, setResizeMsg] = useState(null); // {kind, text}
 
   // --- draw-a-new-schematic-by-hand state (empty-state action) --------------
   // Reuses the exact library/cell picker convention SpecForm.jsx already has
@@ -111,6 +176,41 @@ export default function SchematicPanel({ topology, topologyLabel, blockId }) {
       stale = true;
     };
   }, []);
+
+  useEffect(() => {
+    let stale = false;
+    xschemResolutions()
+      .then((r) => {
+        if (stale) return;
+        setResolutions(r);
+        setStartResolution((cur) => cur || loadStartResolution(r.default));
+      })
+      .catch(() => {
+        // Non-fatal: the "Edit in xschem" buttons still work without a
+        // picker - start_session()'s own DEFAULT_RESOLUTION applies.
+      });
+    return () => {
+      stale = true;
+    };
+  }, []);
+
+  // Track real browser Fullscreen state (not just "we asked for it") so the
+  // toggle button's label stays correct even if the user exits with Esc
+  // instead of clicking it again.
+  useEffect(() => {
+    function onFsChange() {
+      setIsFullscreen(document.fullscreenElement === canvasHostRef.current);
+    }
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => document.removeEventListener("fullscreenchange", onFsChange);
+  }, []);
+
+  // Keep the "change resolution" dropdown defaulted to whatever the live
+  // session is ACTUALLY running at, so it always starts as a no-op choice.
+  useEffect(() => {
+    setResizeChoice(liveSession?.resolution || "");
+    setResizeMsg(null);
+  }, [liveSession?.session_id, liveSession?.resolution]);
 
   useEffect(() => {
     if (!topology) {
@@ -242,7 +342,7 @@ export default function SchematicPanel({ topology, topologyLabel, blockId }) {
     setLiveStarting(true);
     setLiveStatus(null);
     try {
-      const session = await startXschemSession(topology);
+      const session = await startXschemSession(topology, startResolution);
       setLiveSession(session);
       if (session.reused) {
         setLiveStatus({ kind: "info", text: "Reusing the xschem session already open for this block." });
@@ -268,6 +368,60 @@ export default function SchematicPanel({ topology, topologyLabel, blockId }) {
       } catch (e) {
         setLiveStatus({ kind: "error", text: `Session may still be running: ${e instanceof Error ? e.message : String(e)}` });
       }
+    }
+  }
+
+  // --- resize handlers (2026-09) --------------------------------------------
+
+  // Lever A: view size - pure CSS, no backend call, instant.
+  function handleViewSizeChange(size) {
+    setViewSize(size);
+    saveViewSize(size);
+  }
+
+  function handleToggleFullscreen() {
+    if (!canvasHostRef.current) return;
+    if (document.fullscreenElement === canvasHostRef.current) {
+      document.exitFullscreen?.();
+    } else {
+      canvasHostRef.current.requestFullscreen?.().catch(() => {
+        setLiveStatus({ kind: "error", text: "This browser blocked fullscreen for the canvas." });
+      });
+    }
+  }
+
+  function handleStartResolutionChange(value) {
+    setStartResolution(value);
+    saveStartResolution(value);
+  }
+
+  // Lever B: display resolution - DESTRUCTIVE (kills and restarts the whole
+  // session, discarding anything not saved in xschem with Ctrl+S) - always
+  // confirm explicitly first, never silently.
+  async function handleApplyResolution() {
+    if (!liveSession || !resizeChoice || resizeChoice === liveSession.resolution) return;
+    const confirmed = window.confirm(
+      `Change the display to ${resizeChoice}? This restarts the xschem session - any unsaved ` +
+        "work in the current window (not yet saved with Ctrl+S) will be LOST. This cannot be undone."
+    );
+    if (!confirmed) return;
+    setResizeBusy(true);
+    setResizeMsg(null);
+    if (rfbRef.current) {
+      rfbRef.current.disconnect();
+      rfbRef.current = null;
+    }
+    try {
+      const session = await restartXschemSession(liveSession.session_id, resizeChoice);
+      setLiveSession(session);
+      setLiveStatus({
+        kind: "info",
+        text: `Session restarted at ${resizeChoice} - reconnecting...`,
+      });
+    } catch (e) {
+      setResizeMsg({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setResizeBusy(false);
     }
   }
 
@@ -302,7 +456,7 @@ export default function SchematicPanel({ topology, topologyLabel, blockId }) {
     setLiveStarting(true);
     setLiveStatus(null);
     try {
-      const session = await startXschemCellSession(library, cell);
+      const session = await startXschemCellSession(library, cell, startResolution);
       setManualCell({ library, cell });
       setLiveSession(session);
       if (session.reused) {
@@ -370,6 +524,32 @@ export default function SchematicPanel({ topology, topologyLabel, blockId }) {
     } finally {
       setCapturing(false);
     }
+  }
+
+  // Shared by both "start a new live session" entry points (the resolved-
+  // schematic "Edit in xschem" button and the empty-state "Create schematic
+  // in xschem" form) - lets the user pick the Xvfb display size a NEW
+  // session comes up at. Never touches an already-running session (see
+  // Lever B's "change resolution" row inside the live-session block below
+  // for that, which IS destructive and gated behind a confirm()).
+  function renderResolutionPicker(disabled) {
+    if (!resolutions) return null;
+    return (
+      <label className="xschem-resolution-picker" title="Xvfb display size a NEW live session starts at - bigger gives xschem more real drawing area, not just a bigger picture. Does not affect an already-running session.">
+        Display size
+        <select
+          value={startResolution || resolutions.default}
+          onChange={(e) => handleStartResolutionChange(e.target.value)}
+          disabled={disabled}
+        >
+          {resolutions.allowed.map((r) => (
+            <option key={r} value={r}>
+              {r}
+            </option>
+          ))}
+        </select>
+      </label>
+    );
   }
 
   if (!topology) return null;
@@ -499,6 +679,7 @@ export default function SchematicPanel({ topology, topologyLabel, blockId }) {
                     )}
                     {libError && <p className="field-warning">{libError}</p>}
                   </div>
+                  {renderResolutionPicker(creating || liveStarting)}
                   <button
                     type="button"
                     onClick={handleCreateAndOpen}
@@ -560,6 +741,7 @@ export default function SchematicPanel({ topology, topologyLabel, blockId }) {
 
               {!liveSession && (
                 <div className="schematic-actions xschem-live-actions">
+                  {renderResolutionPicker(liveStarting || !hasSchView || (prereqs !== null && !liveAvailable))}
                   <button
                     type="button"
                     onClick={handleStartLive}
@@ -583,20 +765,74 @@ export default function SchematicPanel({ topology, topologyLabel, blockId }) {
           {/* Shared live-session canvas + Capture action: whichever path started it
               (the resolved-schematic "Edit in xschem" above, or the empty-state
               "Create schematic in xschem" form), the embedded noVNC canvas and its
-              status line render the same way. */}
+              status line render the same way. Two independent resize levers:
+              the "View size" row below is CSS-only and instant (Lever A); the
+              "Display resolution" row is the destructive restart-to-resize
+              lever (Lever B), gated behind an explicit confirm(). */}
           {!loading && !error && liveSession && (
             <div className="xschem-live-session">
               <p className="hint schematic-source">
-                Live session — display {liveSession.display}
+                Live session — display {liveSession.display} ({liveSession.resolution})
                 {liveSession.reused ? " (reused)" : ""} — {liveSession.clients ?? 0} browser client(s)
                 connected
               </p>
-              <div className="xschem-live-canvas" ref={canvasHostRef} />
+
+              <div className="xschem-view-controls" title="Rescales the picture already being streamed - instant, no server round-trip, does NOT give xschem more drawing area.">
+                <span className="xschem-view-controls-label">View size:</span>
+                {VIEW_SIZES.map((size) => (
+                  <button
+                    key={size}
+                    type="button"
+                    className={viewSize === size ? "view-size-btn active" : "view-size-btn"}
+                    onClick={() => handleViewSizeChange(size)}
+                  >
+                    {VIEW_SIZE_LABELS[size]}
+                  </button>
+                ))}
+                <button type="button" className="view-size-btn" onClick={handleToggleFullscreen}>
+                  {isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+                </button>
+              </div>
+
+              <div
+                className={`xschem-live-canvas size-${viewSize}${isFullscreen ? " is-fullscreen" : ""}`}
+                ref={canvasHostRef}
+              />
+
               <div className="schematic-actions xschem-live-actions">
                 <button type="button" onClick={handleStopLive}>
                   Stop live session
                 </button>
               </div>
+
+              {resolutions && (
+                <div className="xschem-resize-row" title="Changes xschem's ACTUAL drawing area, not just the picture size - but requires killing and restarting this session (Xvfb can't resize live on this machine), so any unsaved xschem work is lost.">
+                  <label className="xschem-resolution-picker">
+                    Display resolution
+                    <select
+                      value={resizeChoice || liveSession.resolution}
+                      onChange={(e) => setResizeChoice(e.target.value)}
+                      disabled={resizeBusy}
+                    >
+                      {resolutions.allowed.map((r) => (
+                        <option key={r} value={r}>
+                          {r}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleApplyResolution}
+                    disabled={resizeBusy || !resizeChoice || resizeChoice === liveSession.resolution}
+                  >
+                    {resizeBusy ? "Restarting..." : "Apply (restarts session, unsaved work lost)"}
+                  </button>
+                </div>
+              )}
+              {resizeMsg && (
+                <p className={resizeMsg.kind === "error" ? "field-warning" : "hint"}>{resizeMsg.text}</p>
+              )}
             </div>
           )}
           {!loading && !error && liveStatus && (

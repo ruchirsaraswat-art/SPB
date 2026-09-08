@@ -100,11 +100,15 @@ def test_cell_session_starts_on_the_new_blank_cell(client, app_module, monkeypat
     )
     captured_args = {}
 
-    def fake_start_session(cwd, sch_path, label):
+    def fake_start_session(cwd, sch_path, label, resolution=None):
         captured_args["cwd"] = cwd
         captured_args["sch_path"] = sch_path
         captured_args["label"] = label
-        return {"session_id": "fake123", "label": label, "vnc_password": "pw", "reused": False}
+        captured_args["resolution"] = resolution
+        return {
+            "session_id": "fake123", "label": label, "vnc_password": "pw", "reused": False,
+            "resolution": resolution,
+        }
 
     monkeypatch.setattr(app_module.xschem_session_mod, "start_session", fake_start_session)
     r = client.post("/api/xschem/sessions/cell", json={"library": "ddr_afe", "cell": "pll_cell"})
@@ -113,6 +117,9 @@ def test_cell_session_starts_on_the_new_blank_cell(client, app_module, monkeypat
     assert body["session_id"] == "fake123"
     assert body["label"] == "ddr_afe/pll_cell"
     assert captured_args["sch_path"].name == "pll_cell.sch"
+    # No resolution sent in the request body: the route's own default
+    # (xschem_session_mod.DEFAULT_RESOLUTION) is what's threaded through.
+    assert captured_args["resolution"] == app_module.xschem_session_mod.DEFAULT_RESOLUTION
 
 
 def test_capture_422_for_nonexistent_cell(client):

@@ -260,4 +260,124 @@ real_orphan.wait(timeout=5)
 ok("the orphaned real process was actually killed", real_orphan.poll() is not None)
 ok("the orphan's session.json was removed", not (orphan_dir / "session.json").exists())
 
+# --- display resolution (2026-09 resize feature) -----------------------------
+
+def _xvfb_argv(session_id: str) -> list[str]:
+    return xs._PROCS[session_id]["xvfb"].argv
+
+
+def _xschem_argv(session_id: str) -> list[str]:
+    return xs._PROCS[session_id]["xschem"].argv
+
+
+cwd5, sch5 = make_target("res_cell")
+r5 = xs.start_session(cwd5, sch5, "res cell", resolution="1920x1200")
+sid5 = r5["session_id"]
+ok("start_session with an explicit resolution stores it on the session",
+   xs._SESSIONS[sid5].resolution == "1920x1200")
+ok("get_session/_public reports the resolution", xs.get_session(sid5)["resolution"] == "1920x1200")
+ok("Xvfb is spawned with the requested screen size",
+   f"1920x1200x24" in _xvfb_argv(sid5), str(_xvfb_argv(sid5)))
+ok("xschem is spawned with a --command that resizes its own Tk window to fill the display "
+   "(fact: there's no window manager on these Xvfb displays to do that for it)",
+   "wm geometry . 1920x1200+0+0" in _xschem_argv(sid5), str(_xschem_argv(sid5)))
+
+r5_default = xs.start_session(*make_target("res_default_cell"), "res default cell")
+ok("start_session with no resolution argument uses DEFAULT_RESOLUTION",
+   xs._SESSIONS[r5_default["session_id"]].resolution == xs.DEFAULT_RESOLUTION)
+xs.stop_session(r5_default["session_id"])
+
+# --- invalid/absurd resolution rejected --------------------------------------
+
+sessions_before = len(xs._SESSIONS)
+cwd6, sch6 = make_target("bad_res_cell")
+try:
+    xs.start_session(cwd6, sch6, "bad res cell", resolution="99999x99999")
+    ok("an absurd resolution not in ALLOWED_RESOLUTIONS raises ValueError", False)
+except ValueError as exc:
+    ok("an absurd resolution not in ALLOWED_RESOLUTIONS raises ValueError", "99999x99999" in str(exc), str(exc))
+ok("rejecting a bad resolution never allocates/leaks a session",
+   len(xs._SESSIONS) == sessions_before, f"{len(xs._SESSIONS)} != {sessions_before}")
+try:
+    xs.start_session(cwd6, sch6, "bad res cell", resolution="not-a-resolution")
+    ok("a non-WxH-shaped resolution string also raises ValueError", False)
+except ValueError:
+    ok("a non-WxH-shaped resolution string also raises ValueError", True)
+
+# --- restart_session: resize the DISPLAY (destructive) -----------------------
+
+old_display = xs._SESSIONS[sid5].display_num
+old_port = xs._SESSIONS[sid5].vnc_port
+old_procs = dict(xs._PROCS[sid5])  # keep references - stop_session() will pop them from _PROCS
+old_socket = FAKE_X11_DIR / f"X{old_display}"
+ok("old session's Xvfb socket exists before restart", old_socket.exists())
+
+restarted = xs.restart_session(sid5, "2560x1600")
+ok("restart_session returns a NEW session_id (old one was reaped, not mutated in place)",
+   restarted["session_id"] != sid5, str(restarted))
+ok("restarted session reports 'reused': False (it's a genuinely fresh session)",
+   restarted["reused"] is False)
+ok("restarted session runs at the newly requested resolution",
+   restarted["resolution"] == "2560x1600", str(restarted))
+ok("restarted session targets the SAME schematic file the old one did",
+   restarted["sch_path"] == str(sch5))
+ok("old session is gone from the registry", xs.get_session(sid5) is None)
+ok("old Xvfb/xschem/x11vnc were actually terminated (FakeProc.poll() no longer None)",
+   all(p.poll() is not None for p in old_procs.values()))
+# NOTE: the OLD display number is legitimately REUSABLE the instant it's
+# freed (proven separately above by "freed display number is reusable by a
+# later session") - restart_session()'s fresh start_session() call may well
+# land on that exact same number again via _alloc_display()'s lowest-free
+# search, which would re-touch the same socket PATH for the NEW session.
+# That's correct behavior, not a leak - what actually matters is that the
+# display slot is never held by two sessions at once (no leaked duplicate)
+# and the OLD process (checked above) was genuinely torn down first.
+live_owners_of_old_display = [
+    sid for sid, info in xs._SESSIONS.items() if info.display_num == old_display
+]
+ok("the old display number is owned by at most the ONE new session, never the old one too "
+   "(no leaked duplicate claim on the same display)",
+   live_owners_of_old_display in ([], [restarted["session_id"]]), str(live_owners_of_old_display))
+ok("new session's Xvfb argv carries the new resolution",
+   "2560x1600x24" in _xvfb_argv(restarted["session_id"]))
+
+new_sid5 = restarted["session_id"]
+
+# Restarting a session that no longer exists (e.g. already reaped) fails
+# clearly rather than silently doing nothing.
+try:
+    xs.restart_session("not-a-real-session-id", "1280x800")
+    ok("restarting a nonexistent session raises LaunchFailed", False)
+except xs.LaunchFailed:
+    ok("restarting a nonexistent session raises LaunchFailed", True)
+
+xs.stop_session(new_sid5)
+
+# --- concurrency cap still enforced across restarts --------------------------
+
+cap_started = []
+for i in range(xs.MAX_SESSIONS):
+    c, s = make_target(f"cap_restart_{i}")
+    cap_started.append(xs.start_session(c, s, f"cap restart {i}")["session_id"])
+ok(f"filled the cap with {xs.MAX_SESSIONS} sessions", len(xs._SESSIONS) == xs.MAX_SESSIONS)
+
+# Restarting ONE of them (reap-then-start-again) must succeed even while
+# sitting exactly at the cap - it frees its own slot before reclaiming it.
+restarted_at_cap = xs.restart_session(cap_started[0], "1600x1000")
+ok("restarting a session while at the concurrency cap succeeds (reaps its own slot first)",
+   bool(restarted_at_cap.get("session_id")))
+ok("session count is still exactly at the cap after a restart (net zero change)",
+   len(xs._SESSIONS) == xs.MAX_SESSIONS, str(len(xs._SESSIONS)))
+cap_started[0] = restarted_at_cap["session_id"]
+
+c_over2, s_over2 = make_target("cap_restart_over")
+try:
+    xs.start_session(c_over2, s_over2, "cap restart over")
+    ok("the cap is still enforced for a genuinely NEW session after a restart", False)
+except xs.TooManySessions:
+    ok("the cap is still enforced for a genuinely NEW session after a restart", True)
+
+for sid in cap_started:
+    xs.stop_session(sid)
+
 print(f"\nall {CHECKS} checks passed")
