@@ -140,18 +140,18 @@ ok("prereqs_status reports available when every binary is on PATH (this dev box 
 # The rest of this suite fakes ALL THREE binaries via subprocess.Popen (never
 # spawns real Xvfb/xschem/x11vnc), so force "available" unconditionally -
 # real availability on this box was already proven above.
-xs.prereqs_status = lambda: {"available": True, "missing": []}
+xs.prereqs_status = lambda *a, **k: {"available": True, "missing": []}
 
 # --- PrereqMissing surfaced from start_session ------------------------------
 
-xs.prereqs_status = lambda: {"available": False, "missing": ["x11vnc"], "message": "install x11vnc"}
+xs.prereqs_status = lambda *a, **k: {"available": False, "missing": ["x11vnc"], "message": "install x11vnc"}
 cwd, sch = make_target("prereq_check")
 try:
     xs.start_session(cwd, sch, "prereq check")
     ok("PrereqMissing raised when a binary is missing", False)
 except xs.PrereqMissing as exc:
     ok("PrereqMissing raised when a binary is missing", exc.status["missing"] == ["x11vnc"])
-xs.prereqs_status = lambda: {"available": True, "missing": []}
+xs.prereqs_status = lambda *a, **k: {"available": True, "missing": []}
 
 # --- basic start/reuse/stop --------------------------------------------------
 
@@ -267,7 +267,7 @@ def _xvfb_argv(session_id: str) -> list[str]:
 
 
 def _xschem_argv(session_id: str) -> list[str]:
-    return xs._PROCS[session_id]["xschem"].argv
+    return xs._PROCS[session_id]["app"].argv
 
 
 cwd5, sch5 = make_target("res_cell")

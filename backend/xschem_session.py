@@ -72,6 +72,28 @@ Graceful degradation: prereqs_status() checks Xvfb/xschem/x11vnc are all on
 PATH and reports exactly what's missing (with the apt-get install line) if
 not; start_session() raises PrereqMissing wrapping that status rather than
 ever attempting to launch a binary that isn't there.
+
+GENERALIZATION (2026-09, layout-editor integration): this module was
+originally xschem-only. It is now the shared live-session engine for BOTH
+"Edit in xschem (live, in browser)" and "Edit in magic (live, in browser)" -
+same Xvfb + x11vnc + authenticated-WebSocket-proxy plumbing, same lifecycle
+(idle reaper, concurrency cap, orphan cleanup), just pointed at a different
+interactive Tk app. The per-kind pieces (which binaries are required, how to
+spawn the app itself, whether/how to write a project rc file into the
+target's cwd) are the ONLY things that differ, and are captured in a small
+KIND REGISTRY (see register_kind()/ _KIND_SPAWNERS below) rather than
+duplicated: backend/layout_session.py registers "magic" once at import time
+and then calls the exact same start_session()/stop_session()/
+restart_session()/reap_idle_once()/cleanup_orphans_on_startup() this module
+already had - so the concurrency cap, the idle reaper, and the display/port
+allocator are ALL naturally shared across xschem AND magic sessions (one
+_SESSIONS/_PROCS registry, not two), which is what makes "MAX_SESSIONS
+enforced across both tool types" true for free rather than something each
+kind has to re-implement.
+
+Every kwarg new to this generalization (`kind=`) defaults to "xschem" and
+every call already in this codebase before this change keeps working with
+zero call-site edits - see start_session()/restart_session()'s docstrings.
 """
 
 from __future__ import annotations
@@ -89,7 +111,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from circuit_builder import _write_project_xschemrc
 from settings import xschem_sessions_root
@@ -164,23 +186,38 @@ class LaunchFailed(RuntimeError):
 # --- prerequisite check (graceful degradation) -------------------------------
 
 
-def prereqs_status() -> dict[str, Any]:
+def prereqs_status(
+    required_binaries: tuple[str, ...] = REQUIRED_BINARIES,
+    feature_label: str = "Interactive xschem-in-browser",
+) -> dict[str, Any]:
     """Whether every binary this feature needs is on PATH, checked at call
     time (not cached - the user may install x11vnc while the backend is
     running). Missing binaries are reported by their exact apt package name
-    so the frontend can show a copy-pasteable install line."""
-    missing = [name for name in REQUIRED_BINARIES if shutil.which(name) is None]
+    so the frontend can show a copy-pasteable install line.
+
+    Generalized (2026-09) to take the binary list + feature name as
+    parameters so layout_session.py's magic sessions reuse this exact
+    function instead of a copy - callers that don't pass anything (every
+    xschem call site) get byte-identical behavior to before."""
+    missing = [name for name in required_binaries if shutil.which(name) is None]
     if missing:
         pkgs = " ".join(sorted(m.lower() for m in missing))
         return {
             "available": False,
             "missing": missing,
             "message": (
-                f"Interactive xschem-in-browser needs {', '.join(missing)} installed on "
+                f"{feature_label} needs {', '.join(missing)} installed on "
                 f"this machine. Install with: sudo apt install {pkgs}"
             ),
         }
     return {"available": True, "missing": []}
+
+
+def prereqs_status_for_kind(kind: str) -> dict[str, Any]:
+    """prereqs_status() for a registered kind (see register_kind()) - what
+    layout_session.py's GET /api/layout/prereqs uses."""
+    cfg = _KIND_SPAWNERS[kind]
+    return prereqs_status(cfg["required_binaries"], cfg["feature_label"])
 
 
 # --- session state ------------------------------------------------------------
@@ -189,7 +226,7 @@ def prereqs_status() -> dict[str, Any]:
 @dataclass
 class SessionInfo:
     session_id: str
-    key: str  # str(sch_path.resolve()) - one live session per schematic file
+    key: str  # f"{kind}:{sch_path.resolve()}" - one live session per (kind, target file)
     target_dir: str
     sch_path: str
     label: str
@@ -200,8 +237,12 @@ class SessionInfo:
     created_at: str
     last_active_at: str
     xvfb_pid: int
+    # PID of the main interactive app (xschem OR magic - field name kept from
+    # the original xschem-only version for persisted-session.json / orphan-
+    # cleanup back-compat; see cleanup_orphans_on_startup()).
     xschem_pid: int
     x11vnc_pid: int
+    kind: str = "xschem"  # "xschem" | "magic" - see register_kind()
     clients: int = 0
 
 
@@ -209,6 +250,38 @@ _SESSIONS: dict[str, SessionInfo] = {}
 _PROCS: dict[str, dict[str, subprocess.Popen]] = {}
 _lock = threading.RLock()
 _reaper_thread: Optional[threading.Thread] = None
+
+# --- kind registry (2026-09 generalization) -----------------------------------
+#
+# What differs between "live xschem" and "live magic" sessions: which
+# binaries must be on PATH, how to spawn the interactive app itself, the
+# human-readable feature name used in prereq messages, and (xschem only)
+# writing a project-local rc file into the target's cwd. Registered once at
+# import time (xschem below; layout_session.py registers "magic") and looked
+# up by `kind` inside start_session()/restart_session() - so every OTHER
+# piece of lifecycle machinery (display/port allocation, the concurrency cap,
+# the idle reaper, orphan cleanup) is written ONCE and shared, not
+# per-kind-duplicated.
+_KIND_SPAWNERS: dict[str, dict[str, Any]] = {}
+
+
+def register_kind(
+    kind: str,
+    *,
+    spawn_app: Callable[[Path, Path, int, Path, str], subprocess.Popen],
+    required_binaries: tuple[str, ...],
+    feature_label: str,
+    write_project_rc: Optional[Callable[[Path], None]] = None,
+) -> None:
+    """Register a new session `kind` (e.g. "magic") so start_session()/
+    restart_session() know how to launch it. Safe to call more than once for
+    the same kind (last registration wins) - handy for test monkeypatching."""
+    _KIND_SPAWNERS[kind] = {
+        "spawn_app": spawn_app,
+        "required_binaries": required_binaries,
+        "feature_label": feature_label,
+        "write_project_rc": write_project_rc,
+    }
 
 
 def _now() -> str:
@@ -235,6 +308,7 @@ def _public(info: SessionInfo) -> dict[str, Any]:
     alive = bool(procs) and all(p.poll() is None for p in procs.values())
     return {
         "session_id": info.session_id,
+        "kind": info.kind,
         "label": info.label,
         "target_dir": info.target_dir,
         "sch_path": info.sch_path,
@@ -417,9 +491,10 @@ def _kill_pid(pid: int) -> None:
 
 
 def start_session(
-    cwd: Path, sch_path: Path, label: str, resolution: str = DEFAULT_RESOLUTION
+    cwd: Path, sch_path: Path, label: str, resolution: str = DEFAULT_RESOLUTION,
+    *, kind: str = "xschem",
 ) -> dict[str, Any]:
-    """Start (or reuse) an interactive xschem-over-VNC session for `sch_path`
+    """Start (or reuse) an interactive <kind>-over-VNC session for `sch_path`
     (cwd = its project directory, same convention as
     schematics.launch_xschem). Returns a dict including the one-time
     `vnc_password` the caller hands to the frontend's noVNC client. Raises
@@ -427,20 +502,25 @@ def start_session(
     PrereqMissing / TooManySessions / LaunchFailed - callers turn those into
     409/429/500 respectively, never a crash.
 
-    NOTE on reuse: if a session for this exact `sch_path` is already running,
-    it is reused AS-IS regardless of `resolution` - this function never
-    resizes a live session out from under a caller who merely asked to open
-    it again (that would silently kill unsaved xschem work). Changing an
+    `kind` selects which registered app (see register_kind()) this session
+    runs - defaults to "xschem" so every call site that predates this
+    generalization needs zero changes. layout_session.py passes kind="magic".
+
+    NOTE on reuse: if a session for this exact (kind, sch_path) is already
+    running, it is reused AS-IS regardless of `resolution` - this function
+    never resizes a live session out from under a caller who merely asked to
+    open it again (that would silently kill unsaved work). Changing an
     existing session's resolution is a deliberate, explicit action - see
     restart_session()."""
     validate_resolution(resolution)  # ValueError first - cheap, no I/O, no side effects yet
-    status = prereqs_status()
+    cfg = _KIND_SPAWNERS[kind]
+    status = prereqs_status(cfg["required_binaries"], cfg["feature_label"])
     if not status["available"]:
         raise PrereqMissing(status)
     if not sch_path.is_file():
-        raise LaunchFailed(f"schematic file {sch_path} does not exist")
+        raise LaunchFailed(f"{kind} target file {sch_path} does not exist")
 
-    key = str(sch_path.resolve())
+    key = f"{kind}:{sch_path.resolve()}"
     with _lock:
         for info in _SESSIONS.values():
             if info.key == key:
@@ -455,18 +535,21 @@ def start_session(
 
         if len(_SESSIONS) >= MAX_SESSIONS:
             raise TooManySessions(
-                f"{MAX_SESSIONS} interactive xschem sessions are already open - stop one first"
+                f"{MAX_SESSIONS} interactive sessions are already open (xschem + magic combined) "
+                "- stop one first"
             )
 
-        # ALWAYS (re)write - never trust a pre-existing xschemrc here, unlike
-        # schematics.py's local-display launch_xschem which only writes one
-        # if missing. A stale xschemrc (e.g. written by an older version of
-        # this tool, before a security fix such as the bespice-listener
-        # disable below) would otherwise silently keep whatever it already
-        # had - and unlike the local-display path, a VNC session is reachable
-        # over the network, so xschemrc correctness here is a SECURITY
-        # invariant, not just a convenience default.
-        _write_project_xschemrc(cwd)
+        # ALWAYS (re)write - never trust a pre-existing project rc file here,
+        # unlike schematics.py's local-display launch_xschem which only
+        # writes one if missing. A stale xschemrc (e.g. written by an older
+        # version of this tool, before a security fix such as the
+        # bespice-listener disable below) would otherwise silently keep
+        # whatever it already had - and unlike the local-display path, a VNC
+        # session is reachable over the network, so rc-file correctness here
+        # is a SECURITY invariant, not just a convenience default. (magic has
+        # no such project-rc hook registered - see layout_session.py for why.)
+        if cfg["write_project_rc"] is not None:
+            cfg["write_project_rc"](cwd)
 
         session_id = uuid.uuid4().hex[:12]
         session_dir = _session_dir(session_id)
@@ -482,7 +565,7 @@ def start_session(
             session_id=session_id, key=key, target_dir=str(cwd), sch_path=str(sch_path),
             label=label, display_num=display_num, vnc_port=port, vnc_password=password,
             resolution=resolution, created_at=_now(), last_active_at=_now(),
-            xvfb_pid=0, xschem_pid=0, x11vnc_pid=0,
+            xvfb_pid=0, xschem_pid=0, x11vnc_pid=0, kind=kind,
         )
         _SESSIONS[session_id] = info
 
@@ -495,23 +578,23 @@ def start_session(
             tail = (session_dir / "xvfb.log").read_text()[-800:]
             raise LaunchFailed(f"Xvfb exited immediately (code {xvfb.returncode}): {tail}")
 
-        xschem = _spawn_xschem(sch_path, cwd, display_num, session_dir / "xschem.log", resolution=resolution)
+        app = cfg["spawn_app"](sch_path, cwd, display_num, session_dir / f"{kind}.log", resolution)
         time.sleep(1.0)  # fast-failure window, same convention as schematics.launch_xschem
-        if xschem.poll() is not None:
+        if app.poll() is not None:
             _terminate(xvfb)
-            tail = (session_dir / "xschem.log").read_text()[-800:]
-            raise LaunchFailed(f"xschem exited immediately (code {xschem.returncode}): {tail}")
+            tail = (session_dir / f"{kind}.log").read_text()[-800:]
+            raise LaunchFailed(f"{kind} exited immediately (code {app.returncode}): {tail}")
 
         vnc = _spawn_x11vnc(display_num, port, password, session_dir / "x11vnc.log")
         vnc_up = _wait_for(lambda: _port_open(port) or vnc.poll() is not None, 5.0)
         if vnc.poll() is not None:
-            _terminate(xschem)
+            _terminate(app)
             _terminate(xvfb)
             tail = (session_dir / "x11vnc.log").read_text()[-800:]
             raise LaunchFailed(f"x11vnc exited immediately (code {vnc.returncode}): {tail}")
         if not vnc_up:
             _terminate(vnc)
-            _terminate(xschem)
+            _terminate(app)
             _terminate(xvfb)
             raise LaunchFailed(f"x11vnc did not open its loopback port {port} within 5s")
     except Exception:
@@ -521,10 +604,10 @@ def start_session(
         raise
 
     info.xvfb_pid = xvfb.pid
-    info.xschem_pid = xschem.pid
+    info.xschem_pid = app.pid
     info.x11vnc_pid = vnc.pid
     with _lock:
-        _PROCS[session_id] = {"xvfb": xvfb, "xschem": xschem, "x11vnc": vnc}
+        _PROCS[session_id] = {"xvfb": xvfb, "app": app, "x11vnc": vnc}
         _persist(info)
     return {**_public(info), "vnc_password": password, "reused": False}
 
@@ -547,13 +630,18 @@ def stop_session(session_id: str) -> bool:
         procs = _PROCS.pop(session_id, None)
     if info is None:
         return False
-    for name in ("x11vnc", "xschem", "xvfb"):
+    for name in ("x11vnc", "app", "xvfb"):
         p = (procs or {}).get(name)
         if p is not None:
             _terminate(p)
-    session_json = _session_dir(session_id) / "session.json"
-    if session_json.is_file():
-        session_json.unlink()
+    # Remove the WHOLE session dir (session.json + the xvfb/app/x11vnc debug
+    # logs and, for magic sessions, the generated project.magicrc) - not
+    # just session.json. Found while building the layout-editor integration
+    # (2026-09): leaving these behind was a pre-existing leak in this
+    # module (a directory per session, forever, across every prior xschem
+    # session too) - fixed here since it's now shared by both tool types.
+    # ignore_errors: never let cleanup fail the stop itself.
+    shutil.rmtree(_session_dir(session_id), ignore_errors=True)
     return True
 
 
@@ -588,8 +676,9 @@ def restart_session(session_id: str, resolution: str) -> dict[str, Any]:
         cwd = Path(info.target_dir)
         sch_path = Path(info.sch_path)
         label = info.label
+        kind = info.kind
     stop_session(session_id)  # reap BEFORE starting the new one, unconditionally
-    return start_session(cwd, sch_path, label, resolution=resolution)
+    return start_session(cwd, sch_path, label, resolution=resolution, kind=kind)
 
 
 def get_session(session_id: str) -> Optional[dict[str, Any]]:
@@ -626,9 +715,11 @@ def touch_disconnect(session_id: str) -> None:
             info.last_active_at = _now()
 
 
-def list_sessions() -> list[dict[str, Any]]:
+def list_sessions(kind: Optional[str] = None) -> list[dict[str, Any]]:
+    """All live sessions, or (kind=...) just the xschem or magic ones - the
+    schematic and layout panels each only want their own kind."""
     with _lock:
-        return [_public(info) for info in _SESSIONS.values()]
+        return [_public(info) for info in _SESSIONS.values() if kind is None or info.kind == kind]
 
 
 # --- idle reaping --------------------------------------------------------------
@@ -682,12 +773,31 @@ def cleanup_orphans_on_startup() -> int:
         try:
             data = json.loads(session_json.read_text())
         except (json.JSONDecodeError, OSError):
-            session_json.unlink(missing_ok=True)
+            shutil.rmtree(session_json.parent, ignore_errors=True)
             continue
         for pid_key in ("xvfb_pid", "xschem_pid", "x11vnc_pid"):
             pid = data.get(pid_key)
             if isinstance(pid, int) and pid > 0:
                 _kill_pid(pid)
-        session_json.unlink(missing_ok=True)
+        # Remove the whole session dir, not just session.json - see
+        # stop_session's comment on this same cleanup (this codepath is the
+        # startup-orphan-sweep equivalent, and had the identical leak).
+        shutil.rmtree(session_json.parent, ignore_errors=True)
         count += 1
     return count
+
+
+# --- register this module's own kind ------------------------------------------
+#
+# Done last (after every function above it references is defined) so
+# start_session(kind="xschem") - the default every pre-existing call site
+# uses - has an entry in _KIND_SPAWNERS the moment this module is imported.
+# layout_session.py does the analogous register_kind("magic", ...) at ITS
+# import time.
+register_kind(
+    "xschem",
+    spawn_app=_spawn_xschem,
+    required_binaries=REQUIRED_BINARIES,
+    feature_label="Interactive xschem-in-browser",
+    write_project_rc=_write_project_xschemrc,
+)

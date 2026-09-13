@@ -5,6 +5,7 @@ import ResultsPanel from "./ResultsPanel";
 import ResultsView from "./ResultsView";
 import LogPanel from "./LogPanel";
 import SchematicPanel from "./SchematicPanel";
+import LayoutPanel from "./LayoutPanel";
 import SettingsPanel from "./SettingsPanel";
 import ArchChatSidebar from "./ArchChatSidebar";
 import InterfaceEditor from "./InterfaceEditor";
@@ -692,6 +693,15 @@ export default function App() {
             {archView.topology && (
               <div className="panel schematic-panel-slot">
                 <SchematicPanel
+                  topology={archView.topology}
+                  topologyLabel={archView.topology_label}
+                  blockId={archView.selected_block}
+                />
+              </div>
+            )}
+            {archView.topology && (
+              <div className="panel schematic-panel-slot">
+                <LayoutPanel
                   topology={archView.topology}
                   topologyLabel={archView.topology_label}
                   blockId={archView.selected_block}

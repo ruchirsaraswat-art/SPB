@@ -39,6 +39,7 @@ import arch_chat as arch_chat_mod
 import auth as auth_mod
 import channels as channels_mod
 import xschem_session as xschem_session_mod
+import layout as layout_mod
 import fw_chat as fw_chat_mod
 import fw_generate as fw_generate_mod
 import if_chat as if_chat_mod
@@ -214,12 +215,16 @@ def _on_startup() -> None:
     # Channels are listed live from disk (like libraries), so there is no
     # registry to load - only fits orphaned by a killed backend to repair.
     _repair_orphaned_channels()
-    # Same idea for interactive xschem-over-VNC sessions (see
-    # backend/xschem_session.py): any Xvfb/xschem/x11vnc left running by a
-    # previously-killed backend process is, by definition, orphaned (this
-    # fresh process's in-memory session registry starts empty, so nothing
-    # will ever proxy their VNC traffic again) - kill them and start the
-    # idle-reaper thread for sessions started from here on.
+    # Same idea for interactive xschem/magic-over-VNC sessions (see
+    # backend/xschem_session.py): any Xvfb/xschem/magic/x11vnc left running
+    # by a previously-killed backend process is, by definition, orphaned
+    # (this fresh process's in-memory session registry starts empty, so
+    # nothing will ever proxy their VNC traffic again) - kill them and start
+    # the idle-reaper thread for sessions started from here on. ONE shared
+    # registry/reaper covers BOTH xschem (backend/xschem_session.py) and
+    # layout/magic (backend/layout.py) sessions - nothing layout-specific to
+    # call here, which is the point of generalizing the session engine
+    # instead of giving magic its own parallel copy of this lifecycle code.
     xschem_session_mod.cleanup_orphans_on_startup()
     xschem_session_mod.start_background_reaper()
     # Print the shared-secret token (and a ready-to-paste URL carrying it) so
@@ -2094,32 +2099,37 @@ def restart_xschem_session(session_id: str, body: XschemRestartRequest):
         raise HTTPException(status_code=500, detail=str(exc)) from None
 
 
-@app.websocket("/api/xschem/sessions/{session_id}/ws")
-async def xschem_session_ws(websocket: WebSocket, session_id: str):
-    """Proxies raw bytes between the browser's WebSocket and x11vnc's
-    loopback TCP port for this session. noVNC's wire format IS the RFB
-    protocol carried unmodified inside WebSocket binary frames, so this
-    never has to understand VNC/RFB itself - just pipe bytes both ways until
-    either side closes.
+async def _proxy_vnc_ws(websocket: WebSocket, session_id: str) -> None:
+    """Shared body for the xschem AND layout(magic) live-session WebSocket
+    routes below: proxies raw bytes between the browser's WebSocket and
+    x11vnc's loopback TCP port for `session_id`. Always resolved via
+    xschem_session_mod - it's the ONE shared session engine both xschem and
+    magic sessions live in (see backend/xschem_session.py's generalization,
+    register_kind()) - a session_id is unique across both kinds, so there is
+    nothing kind-specific to look up here regardless of which route
+    (/api/xschem/... or /api/layout/...) called this. noVNC's wire format IS
+    the RFB protocol carried unmodified inside WebSocket binary frames, so
+    this never has to understand VNC/RFB itself - just pipe bytes both ways
+    until either side closes. Generalized (2026-09) from what was a single
+    xschem-only route so the layout/magic route isn't a copy-paste of this
+    ~50-line proxy loop.
 
-    SECURITY: this route is NOT covered by the `_auth_gate` HTTP middleware
-    above - Starlette middleware registered via `@app.middleware("http")`
-    only ever runs for "http" scope ASGI connections, never "websocket" ones.
-    So the exact same shared-secret check (header / cookie / ?token= query
-    param, loopback-exempt the same way - see backend/auth.py) is done
-    explicitly, HERE, before `.accept()` is ever called: an unauthenticated
-    peer's handshake is rejected outright and never reaches x11vnc, or even
-    a real session lookup."""
-    token = auth_token()
-    if not auth_mod.is_authorized(websocket, token):
-        await websocket.close(code=4401)
-        return
+    SECURITY: callers MUST have already done the auth check and NOT called
+    `.accept()` yet - see either route below. This route is NOT covered by
+    the `_auth_gate` HTTP middleware above - Starlette middleware registered
+    via `@app.middleware("http")` only ever runs for "http" scope ASGI
+    connections, never "websocket" ones. So the exact same shared-secret
+    check (header / cookie / ?token= query param, loopback-exempt the same
+    way - see backend/auth.py) is done explicitly by each caller, BEFORE
+    `.accept()` is ever called: an unauthenticated peer's handshake is
+    rejected outright and never reaches x11vnc, or even a real session
+    lookup."""
     endpoint = xschem_session_mod.get_vnc_endpoint(session_id)
     if endpoint is None:
         await websocket.close(code=4404)
         return
     await websocket.accept()
-    xschem_session_mod.touch_connect(session_id)
+    xschem_session_mod.touch_connect(session_id)  # shared registry - see xschem_session.py's generalization
     host, port = endpoint
     try:
         reader, writer = await asyncio.open_connection(host, port)
@@ -2164,6 +2174,204 @@ async def xschem_session_ws(websocket: WebSocket, session_id: str):
         xschem_session_mod.touch_disconnect(session_id)
         if websocket.client_state == WebSocketState.CONNECTED:
             await websocket.close()
+
+
+@app.websocket("/api/xschem/sessions/{session_id}/ws")
+async def xschem_session_ws(websocket: WebSocket, session_id: str):
+    """See _proxy_vnc_ws's docstring for the shared proxy behavior/security
+    model. This route only does the auth check + which session registry to
+    resolve `session_id` against (xschem_session_mod itself - it's already
+    the shared engine, so no kind filtering needed here)."""
+    token = auth_token()
+    if not auth_mod.is_authorized(websocket, token):
+        await websocket.close(code=4401)
+        return
+    await _proxy_vnc_ws(websocket, session_id)
+
+
+@app.websocket("/api/layout/sessions/{session_id}/ws")
+async def layout_session_ws(websocket: WebSocket, session_id: str):
+    """Layout/magic counterpart to xschem_session_ws - identical auth gate,
+    identical proxy body (see _proxy_vnc_ws)."""
+    token = auth_token()
+    if not auth_mod.is_authorized(websocket, token):
+        await websocket.close(code=4401)
+        return
+    await _proxy_vnc_ws(websocket, session_id)
+
+
+# ---------------------------------------------------------------------------
+# Layout sessions (2026-09): the magic counterpart to the xschem routes
+# above - same library/cell/view convention (a <cell>.mag alongside
+# <cell>.sch/<cell>.sym - see backend/layout.py), same live-VNC-session
+# mechanics (reusing xschem_session_mod's generalized engine, NOT a parallel
+# copy - see backend/xschem_session.py's register_kind()), same
+# resolve-or-offer-to-create empty state as the schematic panel. Layouts
+# have no run-based source and no headless "capture" step - see
+# backend/layout.py's module docstring for why (batch magic is unreliable
+# on this install).
+
+
+@app.get("/api/layout/prereqs")
+def layout_prereqs():
+    """Whether this machine can run live layout sessions right now (Xvfb +
+    magic + x11vnc all on PATH) - checked live, same shape as
+    GET /api/xschem/prereqs."""
+    return layout_mod.prereqs_status()
+
+
+@app.get("/api/layout/resolutions")
+def layout_resolutions():
+    """Same fixed preset list as GET /api/xschem/resolutions - the Xvfb
+    display-resolution mechanics are identical for both tool types (one
+    shared engine), so this is intentionally NOT a layout-specific list."""
+    return {
+        "allowed": list(xschem_session_mod.ALLOWED_RESOLUTIONS),
+        "default": xschem_session_mod.DEFAULT_RESOLUTION,
+    }
+
+
+@app.get("/api/layout/resolve/{library}/{cell}")
+def resolve_library_layout(library: str, cell: str):
+    """Whether <library>/<cell> already has a filed .mag - the layout
+    panel's counterpart to GET /api/schematic/resolve/{topology}. Layouts
+    are resolved at (library, cell) granularity, not by topology: the panel
+    first asks GET /api/schematic/resolve/{topology} (already-existing
+    route) for the block's filed library cell (if any), then asks this
+    route whether THAT cell has a layout yet."""
+    try:
+        return layout_mod.resolve_layout(library, cell)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+
+class NewLayoutRequest(BaseModel):
+    library: str = Field(description="Design library to create/use (letters/digits/_/-, max 64 chars)")
+    cell: str = Field(description="Cell name (same charset rules as a library name) - reuses an "
+                       "existing cell dir in place if one already exists (e.g. one that already "
+                       "has a schematic), same convention as POST /api/schematic/new-cell")
+    topology: str = Field(description="Topology this hand-drawn layout is for")
+    label: str | None = Field(default=None, description="Optional human label for the cell")
+
+
+@app.post("/api/layout/new-cell")
+def new_layout_cell(body: NewLayoutRequest):
+    """Create libraries/<library>/<cell>/<cell>.mag as a blank, openable
+    magic layout. 409 (with library/cell in the detail so the frontend can
+    offer "open it instead") when that cell already has a .mag - this NEVER
+    overwrites existing work, same guarantee as POST /api/schematic/new-cell
+    for schematics."""
+    try:
+        return layout_mod.create_blank_layout(body.library, body.cell, body.topology, body.label)
+    except layout_mod.LayoutExists as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": str(exc), "library": exc.library, "cell": exc.cell},
+        ) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+
+class LayoutCellSessionRequest(BaseModel):
+    library: str = Field(description="Library holding the cell to open a live magic session on")
+    cell: str = Field(description="Cell name (must already have a .mag)")
+    resolution: str = Field(
+        default=xschem_session_mod.DEFAULT_RESOLUTION,
+        description=(
+            "Xvfb display resolution as WxH (one of xschem_session.ALLOWED_RESOLUTIONS) for a "
+            "NEW session only - ignored if a session for this cell is already running (use "
+            "POST .../restart to change an existing session's resolution)."
+        ),
+    )
+
+
+@app.post("/api/layout/sessions/cell")
+def start_layout_cell_session(body: LayoutCellSessionRequest):
+    """Start (or reuse) a live magic-over-VNC session directly on a specific
+    library cell's .mag - the layout counterpart to
+    POST /api/xschem/sessions/cell. Same exception-to-status-code mapping."""
+    try:
+        mag_path, cwd = layout_mod.mag_and_cwd_for_cell(body.library, body.cell)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    try:
+        return layout_mod.start_session(
+            cwd, mag_path, f"{body.library}/{body.cell}", resolution=body.resolution
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except xschem_session_mod.PrereqMissing as exc:
+        raise HTTPException(status_code=409, detail=exc.status.get("message", str(exc))) from None
+    except xschem_session_mod.TooManySessions as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from None
+    except xschem_session_mod.LaunchFailed as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from None
+
+
+class LayoutCaptureRequest(BaseModel):
+    library: str = Field(description="Library holding the cell to capture")
+    cell: str = Field(description="Cell name (must already have a .mag)")
+
+
+@app.post("/api/layout/capture")
+def capture_layout_cell(body: LayoutCaptureRequest):
+    """Render the cell's current .mag to a PNG (backend/layout.py's
+    capture_manual_layout - real magic binary, batch `plot pnm`). Call this
+    after saving from a live magic session; safe to call again after
+    further edits - it re-renders whatever is on disk right now."""
+    try:
+        return layout_mod.capture_manual_layout(body.library, body.cell)
+    except layout_mod.CaptureFailed as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+
+@app.get("/api/layout/sessions")
+def list_layout_sessions():
+    return layout_mod.list_sessions()
+
+
+@app.get("/api/layout/sessions/{session_id}")
+def get_layout_session(session_id: str):
+    info = layout_mod.get_session(session_id)
+    if info is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return info
+
+
+@app.post("/api/layout/sessions/{session_id}/stop")
+def stop_layout_session(session_id: str):
+    if layout_mod.get_session(session_id) is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    layout_mod.stop_session(session_id)
+    return {"status": "stopped"}
+
+
+class LayoutRestartRequest(BaseModel):
+    resolution: str = Field(description="New Xvfb display resolution (WxH) to restart this session at")
+
+
+@app.post("/api/layout/sessions/{session_id}/restart")
+def restart_layout_session(session_id: str, body: LayoutRestartRequest):
+    """Apply a NEW display resolution to a live layout session - identical
+    destructive restart-to-resize semantics as POST
+    /api/xschem/sessions/{id}/restart (see that route's docstring): any
+    unsaved (not explicitly saved in magic) work in the old session is lost
+    the instant this runs. The frontend must have already gotten explicit
+    user confirmation before calling this."""
+    if layout_mod.get_session(session_id) is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    try:
+        return layout_mod.restart_session(session_id, body.resolution)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except xschem_session_mod.PrereqMissing as exc:
+        raise HTTPException(status_code=409, detail=exc.status.get("message", str(exc))) from None
+    except xschem_session_mod.TooManySessions as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from None
+    except xschem_session_mod.LaunchFailed as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from None
 
 
 @app.get("/api/runs")

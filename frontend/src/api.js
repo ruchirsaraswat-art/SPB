@@ -448,6 +448,139 @@ export function xschemWsUrl(sessionId) {
   return `${wsBase}/api/xschem/sessions/${encodeURIComponent(sessionId)}/ws${q}`;
 }
 
+// --- Layout (magic) live sessions (2026-09) ---------------------------------
+// The layout panel's counterpart to everything above - same shapes, same
+// one-live-session-per-target/one-time-vnc_password/destructive-restart
+// semantics, just pointed at backend/layout.py's /api/layout/* routes
+// (which reuse xschem_session.py's session engine under the hood - see that
+// module's register_kind()). Layouts are resolved at (library, cell)
+// granularity, not by topology - see resolveLayout below.
+
+export async function layoutPrereqs() {
+  const res = await apiFetch(`${API_BASE}/api/layout/prereqs`);
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Failed to check layout (magic) prerequisites"));
+  }
+  return res.json();
+}
+
+// Same preset list as xschemResolutions() (one shared Xvfb-resolution engine
+// for both tool types) - kept as its own call so the layout panel never has
+// to assume the xschem route exists/is reachable independently.
+export async function layoutResolutions() {
+  const res = await apiFetch(`${API_BASE}/api/layout/resolutions`);
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Failed to fetch layout resolution presets"));
+  }
+  return res.json();
+}
+
+// Whether <library>/<cell> already has a filed .mag - {found, mag, dir} or
+// {found: false, message}. Layouts have no run-based fallback (see
+// backend/layout.py's module docstring), so this is the ENTIRE resolution -
+// no priority search like resolveSchematic's filed-cell-vs-latest-run.
+export async function resolveLayout(library, cell) {
+  const res = await apiFetch(
+    `${API_BASE}/api/layout/resolve/${encodeURIComponent(library)}/${encodeURIComponent(cell)}`
+  );
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, "Failed to resolve layout"));
+  }
+  return res.json();
+}
+
+// Thrown specifically on a 409 (cell already has a .mag) so the caller can
+// offer "open it" instead of just showing a generic error string - same
+// pattern as CellExistsError for schematics.
+export class LayoutExistsError extends Error {
+  constructor(message, library, cell) {
+    super(message);
+    this.name = "LayoutExistsError";
+    this.library = library;
+    this.cell = cell;
+  }
+}
+
+export async function createBlankLayout(library, cell, topology, label) {
+  const res = await apiFetch(`${API_BASE}/api/layout/new-cell`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ library, cell, topology, label: label || null }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if (res.status === 409 && body.detail?.library) {
+      throw new LayoutExistsError(
+        body.detail.message || "That cell already has a layout",
+        body.detail.library,
+        body.detail.cell
+      );
+    }
+    throw new Error(body.detail || `Failed to create layout: ${res.status}`);
+  }
+  return body;
+}
+
+// Headlessly render the cell's current .mag to a PNG (real magic binary,
+// batch `plot pnm` - see backend/layout.py's capture_manual_layout). Call
+// after saving from a live session; safe to call again after further edits.
+export async function captureLayout(library, cell) {
+  const res = await apiFetch(`${API_BASE}/api/layout/capture`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ library, cell }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(body.detail || `Failed to capture layout: ${res.status}`);
+  }
+  return body;
+}
+
+export async function startLayoutCellSession(library, cell, resolution) {
+  const res = await apiFetch(`${API_BASE}/api/layout/sessions/cell`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(resolution ? { library, cell, resolution } : { library, cell }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(body.detail || `Failed to start layout session: ${res.status}`);
+  }
+  return body;
+}
+
+export async function restartLayoutSession(sessionId, resolution) {
+  const res = await apiFetch(`${API_BASE}/api/layout/sessions/${encodeURIComponent(sessionId)}/restart`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ resolution }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(body.detail || `Failed to restart layout session: ${res.status}`);
+  }
+  return body;
+}
+
+export async function stopLayoutSession(sessionId) {
+  const res = await apiFetch(`${API_BASE}/api/layout/sessions/${encodeURIComponent(sessionId)}/stop`, {
+    method: "POST",
+  });
+  if (!res.ok && res.status !== 404) {
+    throw new Error(await apiErrorMessage(res, "Failed to stop layout session"));
+  }
+  return true;
+}
+
+export function layoutWsUrl(sessionId) {
+  const base = API_BASE || window.location.origin;
+  const wsBase = base.replace(/^http/, "ws");
+  const token = getAuthToken();
+  const q = token ? `?token=${encodeURIComponent(token)}` : "";
+  return `${wsBase}/api/layout/sessions/${encodeURIComponent(sessionId)}/ws${q}`;
+}
+
 // Tool settings (cycle 5): the working directory the tool creates its data
 // under (libraries/, runs/, research_runs/), with derived sub-paths and any
 // previous locations that still hold data.
